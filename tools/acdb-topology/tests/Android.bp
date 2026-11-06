@@ -1,0 +1,14 @@
+python_test_host {
+    name: "ar-acdb-topology-test",
+    main: "compiler_test.py",
+    srcs: [
+        "compiler_test.py",
+        "reconstruction.py",
+    ],
+    data: [":ar-acdb-topology"],
+    target: {
+        darwin: {
+            enabled: false,
+        },
+    },
+}

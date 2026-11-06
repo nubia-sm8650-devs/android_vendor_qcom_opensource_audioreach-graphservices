@@ -4,7 +4,6 @@
 
 #include <array>
 #include <cstdint>
-#include <stdexcept>
 #include <string>
 #include <vector>
 #include <json/json.h>
@@ -76,6 +75,7 @@ struct Source {
 Bytes unhex(const Json::Value &value);
 std::string hex(const Bytes &bytes);
 std::vector<Property> read_properties(Reader &reader);
+Declaration read_declaration(Reader &reader);
 std::vector<Declaration> read_declarations(Reader &reader);
 std::vector<ModuleGroup> read_module_groups(Reader &reader);
 std::vector<Connection> read_connections(Reader &reader, bool control);

@@ -5,6 +5,7 @@ cc_binary_host {
         "native.cpp",
         "compiler.cpp",
         "source.cpp",
+        "factoring.cpp",
     ],
     include_dirs: ["bionic/libc/kernel/uapi"],
     cpp_std: "c++17",
@@ -16,18 +17,6 @@ cc_binary_host {
     ],
     static_libs: ["libar-acdb-topology-host"],
     shared_libs: ["libjsoncpp"],
-    target: {
-        darwin: {
-            enabled: false,
-        },
-    },
-}
-
-python_test_host {
-    name: "ar-acdb-topology-test",
-    main: "tests/compiler_test.py",
-    srcs: ["tests/compiler_test.py"],
-    data: [":ar-acdb-topology"],
     target: {
         darwin: {
             enabled: false,

@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "source.h"
 
+#include <stdexcept>
+#include <utility>
+
 namespace acdb_topology
 {
 
@@ -94,19 +97,24 @@ std::vector<Property> read_properties(Reader &reader)
     return result;
 }
 
+Declaration read_declaration(Reader &reader)
+{
+    size_t start = reader.position;
+    uint32_t id = reader.word();
+    auto properties = read_properties(reader);
+    Bytes bytes(reader.bytes.begin() + start,
+                reader.bytes.begin() + reader.position);
+
+    return {id, std::move(properties), std::move(bytes)};
+}
+
 std::vector<Declaration> read_declarations(Reader &reader)
 {
     uint32_t count = reader.count(8);
     std::vector<Declaration> result;
 
-    for (uint32_t i = 0; i < count; i++) {
-        size_t start = reader.position;
-        uint32_t id = reader.word();
-        auto properties = read_properties(reader);
-        Bytes bytes(reader.bytes.begin() + start,
-                    reader.bytes.begin() + reader.position);
-        result.push_back({id, std::move(properties), std::move(bytes)});
-    }
+    for (uint32_t i = 0; i < count; i++)
+        result.push_back(read_declaration(reader));
 
     return result;
 }

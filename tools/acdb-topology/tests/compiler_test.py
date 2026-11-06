@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+from reconstruction import reconstruct
+
 
 if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
     COMPILER = Path(sys.argv.pop(1)).resolve()
@@ -161,6 +163,53 @@ class CompilerTest(unittest.TestCase):
         self.assertEqual(report["source"], source)
         self.assertIn("shared-container", {i["kind"] for i in report["issues"]})
         self.assertFalse(self.output.exists())
+
+    def test_factoring_preserves_choices_variants_and_opaque_records(self):
+        first = fixture(shared=True)
+        second = fixture(shared=True, extra=True)
+        second["graph_keys"] = [["0xa2000000", "0xa2000001"]]
+        control = words(0x4001, 7, 0x4002, 8, 2)
+        control += words(0x08001062, 12, 0, 1, 0x0800105D)
+        control += words(0x0800136F, 4, 2)
+        first["graph_connections"] = record(
+            0x08001061, words(1) + control[:-4] + words(1)).hex()
+        opaque = words(4, 0x08001162, 3, 0) + b"xyz" + b"abcde"
+        second["graph_open"] += opaque.hex()
+        second["graph_connections"] = (
+            record(0x08001004, words(2, 0x4001, 1, 0x4002, 2,
+                                     0x4001, 1, 0x4002, 2))
+            + record(0x08001061, words(1) + control)).hex()
+        sources = [first, second]
+        directory = self.root / "inputs"
+        directory.mkdir()
+
+        def run(values):
+            for index, value in enumerate(values):
+                (directory / f"{index}.json").write_text(json.dumps(value))
+
+            completed = subprocess.run([
+                str(COMPILER), "--exports", str(directory), "--report",
+                str(self.report)], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 2, completed.stderr)
+            return json.loads(self.report.read_text())["factored"]
+
+        factored = run(sources)
+        self.assertEqual(reconstruct(factored), sources)
+        definitions = factored["definitions"]
+        self.assertEqual(len(definitions["containers"]), 1)
+        self.assertEqual({d["id"] for d in definitions["containers"]},
+                         {0xE0000001})
+        groups = definitions["module_groups"]
+        self.assertEqual({g["container"] for g in groups}, {0xE0000001})
+        self.assertEqual({g["subgraph"] for g in groups},
+                         {0xB0000001, 0xB0000002})
+        self.assertEqual(len(definitions["data_links"]), 1)
+        self.assertEqual(len(definitions["control_links"]), 2)
+        self.assertEqual(len(definitions["subgraphs"]), 4)
+        reversed_factored = run(list(reversed(sources)))
+        self.assertEqual(reconstruct(reversed_factored),
+                         list(reversed(sources)))
+        self.assertEqual(reversed_factored["definitions"], definitions)
 
     def test_truncated_parameter_is_rejected(self):
         source = fixture()

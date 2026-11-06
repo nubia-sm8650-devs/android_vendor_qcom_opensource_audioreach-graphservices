@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+from reconstruction import reconstruct
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -17,6 +19,16 @@ def main():
 
     with tempfile.TemporaryDirectory() as directory:
         report = Path(directory) / "report.json"
+        completed = subprocess.run([
+            str(args.compiler.resolve()), "--exports", str(args.exports),
+            "--report", str(report)], capture_output=True, text=True)
+        assert completed.returncode in (0, 2), completed.stderr
+        factored = json.loads(report.read_text())["factored"]
+        recovered = reconstruct(factored)
+        assert len(recovered) == len(paths)
+
+        for actual, path in zip(recovered, paths):
+            assert actual == json.loads(path.read_text()), path
 
         for path in paths:
             expected = json.loads(path.read_text())
@@ -32,8 +44,10 @@ def main():
             assert completed.returncode in (0, 2), (path, completed.stderr)
             actual = json.loads(report.read_text())
             assert actual["graphs"][0]["source"] == expected, path
+            assert reconstruct(actual["factored"]) == [expected], path
 
     print(f"Native ACDB queries match all {len(paths)} reference exports")
+    print("Factored declarations reconstruct every original graph buffer")
 
 
 if __name__ == "__main__":

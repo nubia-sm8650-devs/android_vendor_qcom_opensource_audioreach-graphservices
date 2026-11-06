@@ -157,6 +157,7 @@ int main(int argc, char **argv)
         result["issues"] = counts;
         result["can_emit"] = Json::UInt64(supported);
         result["selections"] = Json::UInt64(graphs.size());
+        result["factored"] = acdb_topology::factor_sources(sources);
         Json::StreamWriterBuilder writer;
         writer["indentation"] = "  ";
         write(report, Json::writeString(writer, result) + "\n");
