@@ -705,6 +705,7 @@ int32_t AcdbFileManRemoveDatabase(acdb_file_man_handle_t *fm_handle)
     bool_t had_workspace = 0;
     AcdbFileManDatabaseInfo *db_info = NULL;
     AcdbFileManWorkspaceInfo *ws_info = NULL;
+    acdb_buffer_t database = { 0 };
 
     if (IsNull(fm_handle))
         return AR_EBADPARAM;
@@ -719,7 +720,9 @@ int32_t AcdbFileManRemoveDatabase(acdb_file_man_handle_t *fm_handle)
     if (!IsNull(db_info->file_handle))
         (void)ar_fclose(db_info->file_handle);
 
-    AcbdInitUnloadInMemFile(db_info->database_cache);
+    database.buffer = db_info->database_cache;
+    database.size = db_info->database_cache_size;
+    AcbdInitUnloadInMemFile(&database);
     ACDB_FREE(db_info);
 
     if (!IsNull(ws_info))
