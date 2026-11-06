@@ -105,9 +105,84 @@ Json::Value parameters(const Json::Value &data, uint32_t module)
     return result;
 }
 
+Json::Value board_candidates(const Json::Value &metadata,
+                              const Json::Value &endpoint,
+                              const Json::Value &board)
+{
+    std::set<std::pair<uint32_t, uint32_t>> keys;
+
+    for (const auto &pair : metadata["graph_keys"])
+        keys.emplace(read_number(pair[0].asString()),
+                     read_number(pair[1].asString()));
+
+    Json::Value result(Json::arrayValue);
+
+    for (Json::ArrayIndex i = 0; i < board["assignments"].size(); i++) {
+        const auto &assignment = board["assignments"][i];
+        bool matches = true, device_key = false;
+
+        for (const auto &pair : assignment["keys"]) {
+            uint32_t key = pair[0].asUInt();
+            matches &= keys.count({key, pair[1].asUInt()}) != 0;
+
+            if (endpoint["direction"] == "playback")
+                device_key |= key == 0xa2000000;
+            else
+                device_key |= key == 0xa3000000 || key == 0xd7000000;
+        }
+
+        if (!matches || !device_key)
+            continue;
+
+        for (const auto &device : assignment["devices"]) {
+            bool profiled = false;
+
+            for (Json::ArrayIndex p = 0; p < board["profiles"].size(); p++) {
+                const auto &profile = board["profiles"][p];
+                if (profile["device"] != device)
+                    continue;
+
+                profiled = true;
+
+                Json::Value candidate;
+                candidate["assignment"] = i;
+                candidate["profile"] = p;
+                candidate["links"] = profile["links"];
+                candidate["binding"] = Json::Value();
+
+                const auto &transport = profile["transport"];
+                if (transport.isNull())
+                    candidate["status"] = "unsupported-board-interface";
+                else if (transport["family"] != endpoint["family"] ||
+                         transport["direction"] != endpoint["direction"])
+                    candidate["status"] = "interface-mismatch";
+                else if (profile["links"].empty())
+                    candidate["status"] = "missing-board-link";
+                else
+                    candidate["status"] = "candidate";
+
+                result.append(candidate);
+            }
+
+            if (!profiled) {
+                Json::Value candidate;
+                candidate["assignment"] = i;
+                candidate["device"] = device;
+                candidate["profile"] = Json::Value();
+                candidate["links"] = Json::Value(Json::arrayValue);
+                candidate["binding"] = Json::Value();
+                candidate["status"] = "missing-device-profile";
+                result.append(candidate);
+            }
+        }
+    }
+
+    return result;
 }
 
-void describe_endpoints(Json::Value &factored)
+}
+
+void describe_endpoints(Json::Value &factored, const Json::Value &board)
 {
     const auto &groups = factored["definitions"]["module_groups"];
 
@@ -188,6 +263,8 @@ void describe_endpoints(Json::Value &factored)
                 endpoint["tag_parameters"].append(variant);
             }
 
+            endpoint["board_candidates"] =
+                board_candidates(metadata, endpoint, board);
             result["physical"].append(endpoint);
         }
 

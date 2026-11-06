@@ -133,11 +133,12 @@ class CompilerTest(unittest.TestCase):
         self.report = self.root / "report.json"
         self.output = self.root / "topology.conf"
 
-    def run_compiler(self, source):
+    def run_compiler(self, source, *options):
         self.source.write_text(json.dumps(source))
         return subprocess.run([
             str(COMPILER), "--input", str(self.source), "--graph-id", "16",
-            "--report", str(self.report), "--output", str(self.output)],
+            "--report", str(self.report), "--output", str(self.output),
+            *options],
             capture_output=True, text=True)
 
     def run_exports(self, sources):
@@ -324,6 +325,96 @@ class CompilerTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 1, completed.stderr)
         self.assertFalse(self.output.exists())
 
+    def test_board_candidates_preserve_qualifiers_and_mismatches(self):
+        dtc = shutil.which("dtc") or str(COMPILER.with_name("dtc"))
+        if not Path(dtc).is_file():
+            self.skipTest("dtc is not installed")
+        dts = self.root / "board.dts"
+        dtb = self.root / "board.dtb"
+        dts.write_text('''/dts-v1/;
+            / {
+                backend: dais {
+                    compatible = "qcom,q6apm-lpass-dais";
+                    #sound-dai-cells = <1>;
+                };
+                sound {
+                    speaker {
+                        link-name = "Speaker Playback";
+                        cpu { sound-dai = <&backend 16>; };
+                    };
+                    capture {
+                        link-name = "WCD Capture";
+                        cpu { sound-dai = <&backend 120>; };
+                    };
+                    disabled {
+                        status = "disabled";
+                        link-name = "Unused Playback";
+                        cpu { sound-dai = <&backend 16>; };
+                    };
+                };
+            };
+        ''')
+        subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-o", str(dtb),
+                        str(dts)], check=True, capture_output=True)
+        rm = self.root / "resources.xml"
+        rm.write_text('''<resource_manager_info><device_profile>
+            <out-device><id>OUT</id>
+                <back_end_name>MI2S-LPAIF-RX-PRIMARY</back_end_name>
+                <samplerate>48000</samplerate>
+                <usecase><name>VOICE</name>
+                    <samplerate>16000</samplerate></usecase>
+            </out-device>
+            <in-device><id>IN</id>
+                <back_end_name>CODEC_DMA-LPAIF_RXTX-TX-3</back_end_name>
+            </in-device>
+            <in-device><id>FEEDBACK</id>
+                <back_end_name>MI2S-LPAIF-TX-PRIMARY</back_end_name>
+            </in-device>
+            </device_profile></resource_manager_info>''')
+        kv = self.root / "usecases.xml"
+        kv.write_text('''<graph_key_value_pair_info>
+            <devices><device id="OUT"><keys_and_values>
+                <graph_kv key="0xA2000000" value="0xA2000001"/>
+            </keys_and_values></device></devices>
+            <devicepps><devicepp id="IN, FEEDBACK, ABSENT">
+                <keys_and_values StreamType="VOICE,SENSOR" DevicePPType="MIC">
+                    <graph_kv key="0xA3000000" value="0xA3000007"/>
+                    <graph_kv key="0xAD000000" value="0xAD000001"/>
+                </keys_and_values>
+            </devicepp></devicepps></graph_key_value_pair_info>''')
+        source = fixture()
+        source["graph_keys"] = [["0xa2000000", "0xa2000001"],
+                                ["0xa3000000", "0xa3000007"],
+                                ["0xad000000", "0xad000001"]]
+        append_modules(source, [(0x0700100A, 0x5001), (0x07001024, 0x5002)])
+        options = ["--resource-manager", str(rm), "--usecase-kv", str(kv),
+                   "--board-dtb", str(dtb)]
+        completed = self.run_compiler(source, *options)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        result = json.loads(self.report.read_text())
+        self.assertEqual(reconstruct(result["factored"]), [source])
+        check_endpoints(result["factored"], [source])
+        board = result["board"]
+        self.assertEqual([link["dai"] for link in board["links"]], [16, 120])
+        self.assertEqual(board["assignments"][1]["conditions"], {
+            "StreamType": "VOICE,SENSOR", "DevicePPType": "MIC"})
+        self.assertIn("<samplerate>16000</samplerate>",
+                      board["profiles"][0]["xml"])
+        endpoints = result["factored"]["selections"][0]["endpoints"]["physical"]
+        self.assertEqual(endpoints[0]["board_candidates"], [{
+            "assignment": 0, "profile": 0, "links": [0],
+            "binding": None, "status": "candidate"}])
+        candidates = endpoints[1]["board_candidates"]
+        self.assertEqual([c["status"] for c in candidates],
+                         ["candidate", "interface-mismatch",
+                          "missing-device-profile"])
+
+        source["graph_keys"].pop()
+        completed = self.run_compiler(source, *options)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        endpoints = json.loads(self.report.read_text())["factored"]
+        endpoints = endpoints["selections"][0]["endpoints"]["physical"]
+        self.assertEqual(endpoints[1]["board_candidates"], [])
 
 
 if __name__ == "__main__":

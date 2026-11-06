@@ -41,6 +41,7 @@ int main(int argc, char **argv)
         acdb_topology::Keys keys;
         std::set<uint32_t> key_ids;
         std::string exports, input, output, report;
+        std::string resources, usecases, dtb;
         uint32_t graph_id = 0;
 
         for (int i = 1; i < argc; i++) {
@@ -49,7 +50,9 @@ int main(int argc, char **argv)
                 std::cout << "Usage: ar-acdb-topology --report FILE\n"
                           << "  (--acdb FILE ... --key ID=VALUE ... |\n"
                           << "   --input EXPORT.json | --exports DIRECTORY)\n"
-                          << "  [--graph-id ID] [--output TOPOLOGY.conf]\n";
+                          << "  [--graph-id ID] [--output TOPOLOGY.conf]\n"
+                          << "  [--resource-manager XML --usecase-kv XML\n"
+                          << "   --board-dtb DTB]\n";
                 return 0;
             }
 
@@ -80,6 +83,12 @@ int main(int argc, char **argv)
                 report = value;
             else if (option == "--graph-id")
                 graph_id = read_number(value);
+            else if (option == "--resource-manager")
+                resources = value;
+            else if (option == "--usecase-kv")
+                usecases = value;
+            else if (option == "--board-dtb")
+                dtb = value;
             else
                 throw std::runtime_error("Unknown option " + option);
         }
@@ -89,6 +98,16 @@ int main(int argc, char **argv)
             (databases.empty() != keys.empty()) ||
             (!exports.empty() && !output.empty()))
             throw std::runtime_error("Invalid options; use --help");
+
+        int board_inputs = int(!resources.empty()) + int(!usecases.empty()) +
+                           int(!dtb.empty());
+        if (board_inputs && board_inputs != 3)
+            throw std::runtime_error("Supply all three board inputs");
+
+        Json::Value board;
+
+        if (board_inputs)
+            board = acdb_topology::read_board(resources, usecases, dtb);
 
         std::vector<Json::Value> graphs;
 
@@ -146,7 +165,8 @@ int main(int argc, char **argv)
         result["selections"] = Json::UInt64(graphs.size());
         result["factored"] = acdb_topology::factor_sources(sources);
         acdb_topology::resolve_connections(result["factored"]);
-        acdb_topology::describe_endpoints(result["factored"]);
+        acdb_topology::describe_endpoints(result["factored"], board);
+        result["board"] = board;
 
         Json::StreamWriterBuilder writer;
         writer["indentation"] = "  ";

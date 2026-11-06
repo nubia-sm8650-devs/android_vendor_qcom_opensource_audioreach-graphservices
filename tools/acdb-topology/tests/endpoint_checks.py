@@ -116,6 +116,8 @@ def check_endpoints(factored, sources):
 
             assert endpoint["default_parameters"] == defaults
             assert endpoint["tag_parameters"] == variants
+            assert all(c["binding"] is None
+                       for c in endpoint["board_candidates"])
 
 
 def check_native_reference(source, reference):

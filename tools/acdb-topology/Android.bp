@@ -8,6 +8,7 @@ cc_binary_host {
         "factoring.cpp",
         "ownership.cpp",
         "endpoints.cpp",
+        "board.cpp",
     ],
     include_dirs: ["bionic/libc/kernel/uapi"],
     cpp_std: "c++17",
@@ -18,7 +19,11 @@ cc_binary_host {
         "-Werror",
     ],
     static_libs: ["libar-acdb-topology-host"],
-    shared_libs: ["libjsoncpp"],
+    shared_libs: [
+        "libjsoncpp",
+        "libxml2",
+        "libfdt",
+    ],
     target: {
         darwin: {
             enabled: false,

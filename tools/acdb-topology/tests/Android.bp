@@ -7,7 +7,10 @@ python_test_host {
         "ownership_checks.py",
         "endpoint_checks.py",
     ],
-    data: [":ar-acdb-topology"],
+    data: [
+        ":ar-acdb-topology",
+        ":dtc",
+    ],
     target: {
         darwin: {
             enabled: false,
