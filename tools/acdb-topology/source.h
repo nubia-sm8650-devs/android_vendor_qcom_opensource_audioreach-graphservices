@@ -12,6 +12,7 @@ namespace acdb_topology
 {
 
 using Bytes = std::vector<uint8_t>;
+uint32_t read_number(const std::string &text);
 
 struct Reader {
     Bytes bytes;
@@ -79,6 +80,7 @@ Declaration read_declaration(Reader &reader);
 std::vector<Declaration> read_declarations(Reader &reader);
 std::vector<ModuleGroup> read_module_groups(Reader &reader);
 std::vector<Connection> read_connections(Reader &reader, bool control);
+std::vector<Parameter> read_parameters(const Json::Value &value);
 Source read_source(const Json::Value &source);
 
 }

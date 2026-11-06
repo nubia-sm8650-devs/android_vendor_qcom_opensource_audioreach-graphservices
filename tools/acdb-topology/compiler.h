@@ -24,6 +24,7 @@ Json::Value query_graph(const std::vector<std::string> &paths,
 Compilation compile_graph(const Source &graph, uint32_t graph_id);
 Json::Value factor_sources(const std::vector<Source> &sources);
 void resolve_connections(Json::Value &factored);
+void describe_endpoints(Json::Value &factored);
 
 }
 

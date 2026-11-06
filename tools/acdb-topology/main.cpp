@@ -5,26 +5,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
 
-uint32_t number(const std::string &text)
-{
-    size_t end;
-
-    if (text.empty() || text[0] < '0' || text[0] > '9')
-        throw std::runtime_error("Invalid unsigned integer");
-
-    unsigned long long value = std::stoull(text, &end, 0);
-    if (end != text.size() || value > std::numeric_limits<uint32_t>::max())
-        throw std::runtime_error("Unsigned integer is out of range");
-
-    return value;
-}
+using acdb_topology::read_number;
 
 Json::Value read_json(const fs::path &path)
 {
@@ -78,11 +65,11 @@ int main(int argc, char **argv)
                 if (equal == std::string::npos)
                     throw std::runtime_error("Expected KEY=VALUE");
 
-                uint32_t key = number(value.substr(0, equal));
+                uint32_t key = read_number(value.substr(0, equal));
                 if (!key_ids.insert(key).second)
                     throw std::runtime_error("Repeated graph key");
 
-                keys.emplace_back(key, number(value.substr(equal + 1)));
+                keys.emplace_back(key, read_number(value.substr(equal + 1)));
             } else if (option == "--exports")
                 exports = value;
             else if (option == "--input")
@@ -92,7 +79,7 @@ int main(int argc, char **argv)
             else if (option == "--report")
                 report = value;
             else if (option == "--graph-id")
-                graph_id = number(value);
+                graph_id = read_number(value);
             else
                 throw std::runtime_error("Unknown option " + option);
         }
@@ -159,6 +146,8 @@ int main(int argc, char **argv)
         result["selections"] = Json::UInt64(graphs.size());
         result["factored"] = acdb_topology::factor_sources(sources);
         acdb_topology::resolve_connections(result["factored"]);
+        acdb_topology::describe_endpoints(result["factored"]);
+
         Json::StreamWriterBuilder writer;
         writer["indentation"] = "  ";
         write(report, Json::writeString(writer, result) + "\n");

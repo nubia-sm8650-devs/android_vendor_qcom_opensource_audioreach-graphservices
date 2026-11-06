@@ -10,6 +10,7 @@ import unittest
 
 from reconstruction import reconstruct
 from ownership_checks import check_requirements
+from endpoint_checks import check_endpoints
 
 
 if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
@@ -109,6 +110,18 @@ def widgets(data):
             result[name.decode()] = groups
         assert position == end
     return result
+
+
+def append_modules(source, modules):
+    group = words(1, 0xB0000001, 0xE0000001, len(modules))
+    ports = words(len(modules))
+
+    for mid, iid in modules:
+        group += words(mid, iid)
+        ports += properties(iid, [(0x08001015, words(1, 1))])
+
+    source["graph_open"] += (record(0x08001002, group)
+                             + record(0x08001003, ports)).hex()
 
 
 class CompilerTest(unittest.TestCase):
@@ -270,6 +283,47 @@ class CompilerTest(unittest.TestCase):
         completed = self.run_compiler(source)
         self.assertEqual(completed.returncode, 1, completed.stderr)
         self.assertFalse(self.output.exists())
+
+    def test_endpoint_roles_preserve_modes_tags_and_parameters(self):
+        hostless = fixture()
+        source = fixture()
+        append_modules(source, [(0x07001000, 0x5001), (0x07001001, 0x5002),
+                                (0x0700100A, 0x5003), (0x07001024, 0x5004),
+                                (0x07001010, 0x5005), (0x07001041, 0x5006)])
+        tags = words(0xC0000004, 3, 0x0700100A, 0x5003,
+                     0x07001010, 0x5005, 0x07001041, 0x5006)
+        variants = words(0xC0000004, 1, 0xA9000000, 2)
+        defaults = words(0x5003, 0x08001019, 12, 0) + words(0, 0, 2) + b"pad!"
+        payload = words(0x5003, 0x08001019, 12, 0) + words(0, 1, 2) + bytes(4)
+        source["endpoint_queries"] = {
+            "tags": {"present": True, "count": 1, "data": tags.hex()},
+            "tag_keys": {"present": True, "count": 1,
+                         "data": variants.hex()},
+            "hardware_tag_data": [{"variant": 0, "present": True,
+                                   "data": payload.hex()}],
+            "empty_ckv_defaults": {"modules": [0x5003, 0x5005, 0x5006],
+                                   "present": True, "data": defaults.hex()}}
+        ambiguous = json.loads(json.dumps(source))
+        append_modules(ambiguous, [(0x07001006, 0x5007)])
+        sources = [hostless, source, ambiguous]
+        completed = self.run_exports(sources)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        result = json.loads(self.report.read_text())
+        factored = result["factored"]
+        self.assertEqual(reconstruct(factored), sources)
+        check_endpoints(factored, sources)
+        self.assertEqual(factored["selections"][0]["endpoints"]["host"]
+                         ["playback"]["resolution"], "none")
+        self.assertEqual(factored["selections"][2]["endpoints"]["host"]
+                         ["playback"]["resolution"], "ambiguous")
+        self.assertEqual([e["module"] for e in factored["selections"][1]
+                          ["endpoints"]["physical"]], [0x5003, 0x5004])
+
+        source["endpoint_queries"]["tags"]["data"] = tags[:-1].hex()
+        completed = self.run_compiler(source)
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertFalse(self.output.exists())
+
 
 
 if __name__ == "__main__":

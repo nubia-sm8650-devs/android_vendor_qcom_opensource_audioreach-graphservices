@@ -5,6 +5,7 @@ python_test_host {
         "compiler_test.py",
         "reconstruction.py",
         "ownership_checks.py",
+        "endpoint_checks.py",
     ],
     data: [":ar-acdb-topology"],
     target: {

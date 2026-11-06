@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include <set>
 #include <stdexcept>
 #include <acdb.h>
 #include <acdb_types.h>
@@ -65,6 +66,156 @@ void check_size(uint32_t size, size_t capacity)
 {
     if (size > capacity)
         throw std::runtime_error("ACDB response exceeds its allocation");
+}
+
+bool optional_query(uint32_t command, void *request, uint32_t request_size,
+                    void *response, uint32_t response_size)
+{
+    int status = acdb_ioctl(command, request, request_size,
+                            response, response_size);
+    if (status == AR_ENOTEXIST)
+        return false;
+
+    if (status)
+        throw std::runtime_error("ACDB command " + std::to_string(command) +
+                                 " failed with " + std::to_string(status));
+
+    return true;
+}
+
+Json::Value query_endpoints(AcdbGraphKeyVector &keys,
+                            std::vector<uint32_t> &subgraphs)
+{
+    Json::Value result;
+    AcdbCmdGetTagsFromGkvReq tag_request{&keys};
+    AcdbCmdGetTagsFromGkvRsp tags{};
+    bool found = optional_query(ACDB_CMD_GET_TAGS_FROM_GKV, &tag_request,
+                                 sizeof(tag_request), &tags, sizeof(tags));
+    Bytes tag_data;
+
+    if (found) {
+        tag_data = storage(tags.list_size);
+        tags.tag_module_list =
+            reinterpret_cast<AcdbTagModule *>(tag_data.data());
+        query(ACDB_CMD_GET_TAGS_FROM_GKV, &tag_request, sizeof(tag_request),
+              &tags, sizeof(tags));
+        check_size(tags.list_size, tag_data.size());
+        tag_data.resize(tags.list_size);
+    }
+
+    result["tags"]["present"] = found;
+    result["tags"]["count"] = tags.num_tags;
+    result["tags"]["data"] = hex(tag_data);
+    Reader reader{tag_data};
+    std::set<uint32_t> hardware;
+
+    for (uint32_t i = 0; i < tags.num_tags; i++) {
+        uint32_t tag = reader.word(), count = reader.count(8);
+
+        for (uint32_t j = 0; j < count; j++) {
+            reader.word();
+            uint32_t instance = reader.word();
+
+            if (tag == 0xc0000004 || tag == 0xc0000005)
+                hardware.insert(instance);
+        }
+    }
+
+    reader.finish();
+    AcdbTagKeyVectorList variants{};
+    found = optional_query(ACDB_CMD_GET_GRAPH_TAG_KVS, &keys, sizeof(keys),
+                            &variants, sizeof(variants));
+    Bytes key_data;
+
+    if (found) {
+        key_data = storage(variants.list_size);
+        variants.key_vector_list =
+            reinterpret_cast<AcdbTagKeyVector *>(key_data.data());
+        query(ACDB_CMD_GET_GRAPH_TAG_KVS, &keys, sizeof(keys),
+              &variants, sizeof(variants));
+        check_size(variants.list_size, key_data.size());
+        key_data.resize(variants.list_size);
+    }
+
+    result["tag_keys"]["present"] = found;
+    result["tag_keys"]["count"] = variants.num_key_vectors;
+    result["tag_keys"]["data"] = hex(key_data);
+    result["hardware_tag_data"] = Json::Value(Json::arrayValue);
+    reader = Reader{key_data};
+
+    for (uint32_t i = 0; i < variants.num_key_vectors; i++) {
+        uint32_t tag = reader.word(), count = reader.count(8);
+        std::vector<AcdbKeyValuePair> pairs;
+
+        for (uint32_t j = 0; j < count; j++) {
+            uint32_t key = reader.word(), value = reader.word();
+            pairs.push_back({key, value});
+        }
+
+        if (tag != 0xc0000004 && tag != 0xc0000005)
+            continue;
+
+        AcdbSgIdModuleTag request{};
+        request.num_sg_ids = subgraphs.size();
+        request.sg_ids = subgraphs.data();
+        request.module_tag.tag_id = tag;
+        request.module_tag.tag_key_vector = {count, pairs.data()};
+        AcdbBlob response{};
+        Json::Value entry;
+        entry["variant"] = i;
+        entry["queried"] = count != 0;
+        entry["present"] = count && optional_query(ACDB_CMD_GET_MODULE_TAG_DATA,
+            &request, sizeof(request), &response, sizeof(response));
+        Bytes data;
+
+        if (entry["present"].asBool()) {
+            data = storage(response.buf_size);
+            response.buf = data.data();
+            query(ACDB_CMD_GET_MODULE_TAG_DATA, &request, sizeof(request),
+                  &response, sizeof(response));
+            check_size(response.buf_size, data.size());
+            data.resize(response.buf_size);
+        }
+
+        entry["data"] = hex(data);
+        result["hardware_tag_data"].append(entry);
+    }
+
+    reader.finish();
+    result["empty_ckv_defaults"]["modules"] = Json::Value(Json::arrayValue);
+    result["empty_ckv_defaults"]["present"] = false;
+    result["empty_ckv_defaults"]["data"] = "";
+    std::vector<uint32_t> modules;
+
+    for (uint32_t instance : hardware) {
+        modules.push_back(instance);
+        modules.push_back(0);
+        result["empty_ckv_defaults"]["modules"].append(instance);
+    }
+
+    if (!modules.empty()) {
+        AcdbGetCalDataReq request{};
+        request.graph_key_vector = keys;
+        request.num_module_instance = hardware.size();
+        request.instance_param_list =
+            reinterpret_cast<AcdbModuleParamList *>(modules.data());
+        AcdbBlob response{};
+        found = optional_query(ACDB_CMD_GET_CAL_DATA, &request, sizeof(request),
+                                &response, sizeof(response));
+        result["empty_ckv_defaults"]["present"] = found;
+
+        if (found) {
+            auto data = storage(response.buf_size);
+            response.buf = data.data();
+            query(ACDB_CMD_GET_CAL_DATA, &request, sizeof(request),
+                  &response, sizeof(response));
+            check_size(response.buf_size, data.size());
+            data.resize(response.buf_size);
+            result["empty_ckv_defaults"]["data"] = hex(data);
+        }
+    }
+
+    return result;
 }
 
 }
@@ -185,6 +336,8 @@ Json::Value query_graph(const std::vector<std::string> &paths,
     result["driver_properties"] = hex(driver);
     result["graph_open"] = hex(properties);
     result["graph_connections"] = hex(connections);
+
+    result["endpoint_queries"] = query_endpoints(key_vector, ids);
 
     return result;
 }

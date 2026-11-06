@@ -1,11 +1,26 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "source.h"
 
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
 namespace acdb_topology
 {
+
+uint32_t read_number(const std::string &text)
+{
+    size_t end;
+
+    if (text.empty() || text[0] < '0' || text[0] > '9')
+        throw std::runtime_error("Invalid unsigned integer");
+
+    unsigned long long value = std::stoull(text, &end, 0);
+    if (end != text.size() || value > std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("Unsigned integer is out of range");
+
+    return value;
+}
 
 Bytes Reader::take(size_t count)
 {
@@ -168,32 +183,33 @@ std::vector<Connection> read_connections(Reader &reader, bool control)
     return result;
 }
 
+std::vector<Parameter> read_parameters(const Json::Value &value)
+{
+    Reader records{unhex(value)};
+    std::vector<Parameter> result;
+
+    while (records.remaining()) {
+        Parameter parameter;
+        parameter.target = records.word();
+        parameter.id = records.word();
+        uint32_t size = records.word();
+        parameter.error = records.word();
+        parameter.payload = records.take(size);
+        parameter.padding = records.take((8 - size % 8) % 8);
+
+        if (parameter.error)
+            throw std::runtime_error("Nonzero graph parameter error");
+
+        result.push_back(std::move(parameter));
+    }
+
+    return result;
+}
+
 Source read_source(const Json::Value &source)
 {
-    auto parameters = [](const Json::Value &value) {
-        Reader records{unhex(value)};
-        std::vector<Parameter> result;
-
-        while (records.remaining()) {
-            Parameter parameter;
-            parameter.target = records.word();
-            parameter.id = records.word();
-            uint32_t size = records.word();
-            parameter.error = records.word();
-            parameter.payload = records.take(size);
-            parameter.padding = records.take((8 - size % 8) % 8);
-
-            if (parameter.error)
-                throw std::runtime_error("Nonzero graph parameter error");
-
-            result.push_back(std::move(parameter));
-        }
-
-        return result;
-    };
-
-    return {source, parameters(source["graph_open"]),
-            parameters(source["graph_connections"])};
+    return {source, read_parameters(source["graph_open"]),
+            read_parameters(source["graph_connections"])};
 }
 
 }
