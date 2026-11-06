@@ -4,6 +4,7 @@ cc_binary_host {
         "main.cpp",
         "native.cpp",
         "compiler.cpp",
+        "source.cpp",
     ],
     include_dirs: ["bionic/libc/kernel/uapi"],
     cpp_std: "c++17",

@@ -14,90 +14,7 @@ namespace acdb_topology
 namespace
 {
 
-using Bytes = std::vector<uint8_t>;
 using Tokens = std::vector<std::pair<uint32_t, uint32_t>>;
-
-struct Reader {
-    Bytes bytes;
-    size_t position = 0;
-
-    size_t remaining() const
-    {
-        return bytes.size() - position;
-    }
-
-    Bytes take(size_t count)
-    {
-        if (count > remaining())
-            throw std::runtime_error("Truncated graph record");
-
-        Bytes value(bytes.begin() + position,
-                    bytes.begin() + position + count);
-        position += count;
-
-        return value;
-    }
-
-    uint32_t word()
-    {
-        Bytes value = take(4);
-
-        return uint32_t(value[0]) | uint32_t(value[1]) << 8 |
-               uint32_t(value[2]) << 16 | uint32_t(value[3]) << 24;
-    }
-
-    uint32_t count(size_t stride)
-    {
-        uint32_t value = word();
-        if (value > remaining() / stride)
-            throw std::runtime_error("Invalid graph element count");
-
-        return value;
-    }
-
-    void finish() const
-    {
-        if (remaining())
-            throw std::runtime_error("Trailing graph data");
-    }
-};
-
-Bytes unhex(const Json::Value &value)
-{
-    if (!value.isString())
-        throw std::runtime_error("Graph blob must be hexadecimal text");
-
-    std::string text = value.asString();
-    Bytes result;
-
-    if (text.size() % 2)
-        throw std::runtime_error("Odd hexadecimal blob length");
-
-    auto digit = [](char c) -> unsigned {
-        if (c >= '0' && c <= '9')
-            return c - '0';
-
-        if (c >= 'a' && c <= 'f')
-            return c - 'a' + 10;
-
-        if (c >= 'A' && c <= 'F')
-            return c - 'A' + 10;
-
-        throw std::runtime_error("Invalid hexadecimal blob");
-    };
-
-    for (size_t i = 0; i < text.size(); i += 2)
-        result.push_back(digit(text[i]) * 16 + digit(text[i + 1]));
-
-    return result;
-}
-
-struct Module {
-    uint32_t subgraph;
-    uint32_t container;
-    uint32_t type;
-    uint32_t instance;
-};
 
 struct Graph {
     std::map<uint32_t, Tokens> subgraphs, containers, ports;
@@ -132,18 +49,14 @@ struct Graph {
         };
         auto &objects = family == 0x08001001 ? subgraphs :
                         family == 0x08001000 ? containers : ports;
-        uint32_t count = reader.count(8);
-
-        for (uint32_t i = 0; i < count; i++) {
-            size_t start = reader.position;
-            uint32_t id = reader.word();
-            uint32_t number = reader.count(8);
+        for (const auto &declaration : read_declarations(reader)) {
+            uint32_t id = declaration.id;
             Tokens tokens;
             std::set<uint32_t> seen;
 
-            for (uint32_t j = 0; j < number; j++) {
-                uint32_t property = reader.word();
-                Reader data{reader.take(reader.word())};
+            for (const auto &entry : declaration.properties) {
+                uint32_t property = entry.id;
+                Reader data{entry.payload};
 
                 if (!seen.insert(property).second)
                     throw std::runtime_error("Repeated graph property");
@@ -174,11 +87,9 @@ struct Graph {
                 data.finish();
             }
 
-            Bytes definition(reader.bytes.begin() + start,
-                             reader.bytes.begin() + reader.position);
             auto [previous, inserted] = definitions.emplace(
-                std::make_pair(family, id), definition);
-            if (!inserted && previous->second != definition)
+                std::make_pair(family, id), declaration.bytes);
+            if (!inserted && previous->second != declaration.bytes)
                 throw std::runtime_error("Conflicting graph declaration");
 
             objects.emplace(id, tokens);
@@ -191,20 +102,11 @@ struct Graph {
         }
     }
 
-    void records(const Json::Value &value)
+    void records(const std::vector<Parameter> &parameters)
     {
-        Reader records{unhex(value)};
-
-        while (records.remaining()) {
-            uint32_t target = records.word();
-            uint32_t family = records.word();
-            uint32_t size = records.word();
-            uint32_t error = records.word();
-            Reader data{records.take(size)};
-            records.take((8 - size % 8) % 8);
-
-            if (error)
-                throw std::runtime_error("Nonzero graph parameter error");
+        for (const auto &parameter : parameters) {
+            uint32_t target = parameter.target, family = parameter.id;
+            Reader data{parameter.payload};
 
             if (target != 1) {
                 issue("parameter-target", target, family);
@@ -217,28 +119,15 @@ struct Graph {
             case 0x08001003:
                 properties(data, family);
                 break;
-            case 0x08001002: {
-                uint32_t groups = data.count(12);
-
-                for (uint32_t i = 0; i < groups; i++) {
-                    uint32_t sg = data.word(), container = data.word();
-                    uint32_t count = data.count(8);
-
-                    for (uint32_t j = 0; j < count; j++) {
-                        uint32_t type = data.word(), instance = data.word();
-                        modules.push_back({sg, container, type, instance});
-                    }
-                }
+            case 0x08001002:
+                for (const auto &group : read_module_groups(data))
+                    modules.insert(modules.end(), group.modules.begin(),
+                                   group.modules.end());
                 break;
-            }
-            case 0x08001004: {
-                uint32_t count = data.count(16);
-
-                for (uint32_t i = 0; i < count; i++)
-                    edges.push_back({data.word(), data.word(),
-                                     data.word(), data.word()});
+            case 0x08001004:
+                for (const auto &connection : read_connections(data, false))
+                    edges.push_back(connection.peers);
                 break;
-            }
             default:
                 issue("parameter", target, family);
                 continue;
@@ -274,21 +163,9 @@ void tuples(std::ostream &out, const std::string &name,
 
 }
 
-std::string hex(const std::vector<uint8_t> &bytes)
+Compilation compile_graph(const Source &input, uint32_t graph_id)
 {
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string result;
-
-    for (uint8_t value : bytes) {
-        result += digits[value >> 4];
-        result += digits[value & 15];
-    }
-
-    return result;
-}
-
-Compilation compile_graph(const Json::Value &source, uint32_t graph_id)
-{
+    const auto &source = input.original;
     if (source["version"] != 1 || !source["subgraph_ids"].isArray() ||
         !source["graph_keys"].isArray())
         throw std::runtime_error("Unsupported graph export");
@@ -299,8 +176,8 @@ Compilation compile_graph(const Json::Value &source, uint32_t graph_id)
     Graph graph;
     unhex(source["subgraph_connections"]);
     unhex(source["driver_properties"]);
-    graph.records(source["graph_open"]);
-    graph.records(source["graph_connections"]);
+    graph.records(input.open);
+    graph.records(input.connections);
     std::set<uint32_t> expected;
 
     for (const auto &value : source["subgraph_ids"]) {

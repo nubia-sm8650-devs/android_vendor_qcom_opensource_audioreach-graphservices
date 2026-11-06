@@ -127,6 +127,11 @@ int main(int argc, char **argv)
         if (graphs.empty())
             throw std::runtime_error("No graphs to compile");
 
+        std::vector<acdb_topology::Source> sources;
+
+        for (const auto &graph : graphs)
+            sources.push_back(acdb_topology::read_source(graph));
+
         Json::Value result;
         result["scope"] = "graph declarations";
         result["dsp_execution_verified"] = false;
@@ -135,7 +140,7 @@ int main(int argc, char **argv)
         size_t supported = 0;
         std::string topology;
 
-        for (const auto &graph : graphs) {
+        for (const auto &graph : sources) {
             auto compiled = acdb_topology::compile_graph(graph, graph_id);
             if (compiled.report["can_emit"].asBool())
                 supported++;

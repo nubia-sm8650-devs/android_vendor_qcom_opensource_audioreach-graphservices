@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 #include <json/json.h>
+#include "source.h"
 
 namespace acdb_topology
 {
@@ -20,8 +21,7 @@ struct Compilation {
 
 Json::Value query_graph(const std::vector<std::string> &paths,
                        const Keys &keys);
-Compilation compile_graph(const Json::Value &graph, uint32_t graph_id);
-std::string hex(const std::vector<uint8_t> &bytes);
+Compilation compile_graph(const Source &graph, uint32_t graph_id);
 
 }
 
