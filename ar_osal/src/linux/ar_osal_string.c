@@ -10,6 +10,7 @@
  */
 #include "ar_osal_types.h"
 #include "ar_osal_error.h"
+#include <stdio.h>
 #include <string.h>
 
 /**
@@ -56,7 +57,7 @@ int32_t ar_strcpy(_Inout_ char_t* str_dest, _In_ size_t str_dest_size, _In_ cons
     else if (cpy_size >= str_dest_size )
         final_cpy_size = str_dest_size;
 
-    strlcpy(str_dest, str_src, final_cpy_size);
+    snprintf(str_dest, final_cpy_size, "%s", str_src);
 
     return AR_EOK;
 }
@@ -99,7 +100,8 @@ int32_t ar_strcat(_Inout_ char_t* str_dest, _In_ size_t str_dest_size, _In_ cons
          apnd_size + 1)
          return AR_EFAILED;
 
-    strlcat(str_dest, str_src, str_dest_size);
+    strncat(str_dest, str_src, str_dest_size - strlen(str_dest) - 1);
+
     return AR_EOK;
 }
 
