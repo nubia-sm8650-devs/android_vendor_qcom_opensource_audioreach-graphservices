@@ -1,0 +1,30 @@
+cc_library_host_static {
+    name: "libar-acdb-topology-host",
+    srcs: [
+        "acdb/src/*.c",
+        "ar_osal/src/linux/ar_osal_file_io.c",
+        "ar_osal/src/linux/ar_osal_heap.c",
+        "ar_osal/src/linux/ar_osal_log.c",
+        "ar_osal/src/linux/ar_osal_mem_op.c",
+        "ar_osal/src/linux/ar_osal_mutex.c",
+        "ar_osal/src/linux/ar_osal_string.c",
+    ],
+    export_include_dirs: [
+        "acdb/api",
+        "acdb/inc",
+        "ar_osal/api",
+    ],
+    c_std: "gnu11",
+    cflags: [
+        "-DLINUX_ENABLED",
+        "-DAR_OSAL_USE_SYSLOG",
+        "-Wno-address-of-packed-member",
+        "-Wno-tautological-constant-out-of-range-compare",
+        "-Wno-unused-but-set-variable",
+    ],
+    target: {
+        darwin: {
+            enabled: false,
+        },
+    },
+}
