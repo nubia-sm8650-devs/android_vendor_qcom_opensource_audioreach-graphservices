@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from reconstruction import reconstruct
+from ownership_checks import check_requirements
 
 
 if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
@@ -33,8 +34,9 @@ def properties(identity, values):
     return result
 
 
-def fixture(shared=False, extra=False):
-    sg_ids = [0xB0000001, 0xB0000002] if shared else [0xB0000001]
+def fixture(shared=False, extra=False, source_only=False):
+    sg_ids = ([0xB0000001, 0xB0000002] if shared and not source_only
+              else [0xB0000001])
     sg_data = b""
     for sg in sg_ids:
         props = [(0x0800100E, words(1)), (0x0800100F, words(2)),
@@ -47,7 +49,10 @@ def fixture(shared=False, extra=False):
         (0x08001011, words(1, 0x0B000001)),
         (0x08001012, words(1)), (0x08001013, words(4096)),
         (0x08001014, words(2))])
-    if shared:
+    if source_only:
+        modules = (words(1, sg_ids[0], 0xE0000001, 1)
+                   + words(0x07001005, 0x4001))
+    elif shared:
         modules = (words(2) + words(sg_ids[0], 0xE0000001, 1)
                    + words(0x07001005, 0x4001)
                    + words(sg_ids[1], 0xE0000001, 1)
@@ -55,8 +60,9 @@ def fixture(shared=False, extra=False):
     else:
         modules = (words(1, sg_ids[0], 0xE0000001, 2)
                    + words(0x07001005, 0x4001, 0x07001004, 0x4002))
-    ports = words(2)
-    for iid in (0x4001, 0x4002):
+    instances = (0x4001,) if source_only else (0x4001, 0x4002)
+    ports = words(len(instances))
+    for iid in instances:
         ports += properties(iid, [(0x08001015, words(1, 1))])
     graph = (record(0x08001001, words(len(sg_ids)) + sg_data)
              + record(0x08001000, words(1) + container)
@@ -121,6 +127,16 @@ class CompilerTest(unittest.TestCase):
             "--report", str(self.report), "--output", str(self.output)],
             capture_output=True, text=True)
 
+    def run_exports(self, sources):
+        directory = Path(tempfile.mkdtemp(dir=self.root))
+
+        for index, source in enumerate(sources):
+            (directory / f"{index}.json").write_text(json.dumps(source))
+
+        return subprocess.run([
+            str(COMPILER), "--exports", str(directory), "--report",
+            str(self.report)], capture_output=True, text=True)
+
     def test_conventional_topology_preserves_declarations(self):
         source = fixture()
         completed = self.run_compiler(source)
@@ -180,16 +196,8 @@ class CompilerTest(unittest.TestCase):
                                      0x4001, 1, 0x4002, 2))
             + record(0x08001061, words(1) + control)).hex()
         sources = [first, second]
-        directory = self.root / "inputs"
-        directory.mkdir()
-
         def run(values):
-            for index, value in enumerate(values):
-                (directory / f"{index}.json").write_text(json.dumps(value))
-
-            completed = subprocess.run([
-                str(COMPILER), "--exports", str(directory), "--report",
-                str(self.report)], capture_output=True, text=True)
+            completed = self.run_exports(values)
             self.assertEqual(completed.returncode, 2, completed.stderr)
             return json.loads(self.report.read_text())["factored"]
 
@@ -210,6 +218,51 @@ class CompilerTest(unittest.TestCase):
         self.assertEqual(reconstruct(reversed_factored),
                          list(reversed(sources)))
         self.assertEqual(reversed_factored["definitions"], definitions)
+        self.assertEqual(reversed_factored["module_ownership"],
+                         factored["module_ownership"])
+
+        for actual, expected in zip(reversed_factored["selections"],
+                                    reversed(factored["selections"])):
+            self.assertEqual(actual["connection_requirements"],
+                             expected["connection_requirements"])
+
+    def test_connection_requirements_do_not_import_absent_endpoints(self):
+        partial = fixture(source_only=True)
+        control = words(1, 0x4001, 7, 0x4002, 8, 1, 0x0800136F, 4, 1)
+        partial["graph_connections"] = (
+            record(0x08001004, words(2, 0x4001, 1, 0x4002, 2,
+                                     0x4001, 1, 0x4002, 2))
+            + record(0x08001061, control)).hex()
+        completed = self.run_compiler(partial)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        factored = json.loads(self.report.read_text())["factored"]
+        check_requirements(factored, [partial])
+
+        for value in factored["selections"][0]["connection_requirements"]:
+            self.assertEqual(value["destination"]["resolution"], "unknown")
+            self.assertIsNone(value["required_subgraphs"])
+
+        sources = [fixture(shared=True), partial]
+        completed = self.run_exports(sources)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        factored = json.loads(self.report.read_text())["factored"]
+        self.assertEqual(reconstruct(factored), sources)
+        check_requirements(factored, sources)
+        choices = factored["selections"][1]["connection_requirements"]
+        self.assertEqual(len(choices), 4)
+
+        for value in choices:
+            self.assertEqual(value["source"]["resolution"], "selection")
+            self.assertEqual(value["destination"]["resolution"], "corpus")
+            self.assertFalse(value["endpoints_selected"])
+            self.assertEqual(value["unselected_modules"], [0x4002])
+            self.assertEqual(value["required_subgraphs"],
+                             [0xB0000001, 0xB0000002])
+            self.assertEqual(value["missing_subgraphs"], [0xB0000002])
+            self.assertEqual(value["relation"], "shared-container")
+
+        self.assertEqual(factored["selections"][1]["metadata"]
+                         ["subgraph_ids"], ["0xb0000001"])
 
     def test_truncated_parameter_is_rejected(self):
         source = fixture()

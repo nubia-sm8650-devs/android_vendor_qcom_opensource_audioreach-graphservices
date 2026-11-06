@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 
 from reconstruction import reconstruct
+from ownership_checks import check_requirements
 
 
 def main():
@@ -30,6 +31,8 @@ def main():
         for actual, path in zip(recovered, paths):
             assert actual == json.loads(path.read_text()), path
 
+        check_requirements(factored, [json.loads(p.read_text()) for p in paths])
+
         for path in paths:
             expected = json.loads(path.read_text())
             command = [str(args.compiler.resolve()), "--report", str(report)]
@@ -45,9 +48,11 @@ def main():
             actual = json.loads(report.read_text())
             assert actual["graphs"][0]["source"] == expected, path
             assert reconstruct(actual["factored"]) == [expected], path
+            check_requirements(actual["factored"], [expected])
 
     print(f"Native ACDB queries match all {len(paths)} reference exports")
     print("Factored declarations reconstruct every original graph buffer")
+    print("Connection ownership and selection requirements match source")
 
 
 if __name__ == "__main__":

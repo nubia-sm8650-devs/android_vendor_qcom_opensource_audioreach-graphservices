@@ -158,6 +158,7 @@ int main(int argc, char **argv)
         result["can_emit"] = Json::UInt64(supported);
         result["selections"] = Json::UInt64(graphs.size());
         result["factored"] = acdb_topology::factor_sources(sources);
+        acdb_topology::resolve_connections(result["factored"]);
         Json::StreamWriterBuilder writer;
         writer["indentation"] = "  ";
         write(report, Json::writeString(writer, result) + "\n");

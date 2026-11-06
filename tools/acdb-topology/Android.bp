@@ -6,6 +6,7 @@ cc_binary_host {
         "compiler.cpp",
         "source.cpp",
         "factoring.cpp",
+        "ownership.cpp",
     ],
     include_dirs: ["bionic/libc/kernel/uapi"],
     cpp_std: "c++17",
