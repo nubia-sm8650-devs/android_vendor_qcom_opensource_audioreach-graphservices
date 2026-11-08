@@ -154,28 +154,22 @@ struct Graph {
     }
 };
 
-void control_data(std::ostream &out, const std::string &name,
-                  const std::vector<Connection> &links)
+void append_word(Bytes &data, uint32_t value)
 {
+    for (unsigned shift = 0; shift < 32; shift += 8)
+        data.push_back(value >> shift);
+}
+
+void private_data(std::ostream &out, const std::string &name,
+                  uint32_t type, const Bytes &payload)
+{
+    if (payload.size() > UINT32_MAX - 8)
+        throw std::runtime_error("Private data block exceeds topology size");
+
     Bytes data;
-    auto word = [&](uint32_t value) {
-        for (unsigned shift = 0; shift < 32; shift += 8)
-            data.push_back(value >> shift);
-    };
-    size_t size = 12;
-
-    for (const auto &link : links)
-        size += link.bytes.size();
-
-    if (size > UINT32_MAX)
-        throw std::runtime_error("Control link block exceeds topology size");
-
-    word(size);
-    word(SND_SOC_AR_TPLG_CONTROL_LINK_TYPE);
-    word(links.size());
-
-    for (const auto &link : links)
-        data.insert(data.end(), link.bytes.begin(), link.bytes.end());
+    append_word(data, 8 + payload.size());
+    append_word(data, type);
+    data.insert(data.end(), payload.begin(), payload.end());
 
     std::string bytes = hex(data);
     out << "SectionData.\"" << name << "\" {\n    bytes \"";
@@ -184,6 +178,18 @@ void control_data(std::ostream &out, const std::string &name,
         out << (i ? ", " : "") << "0x" << bytes.substr(i, 2);
 
     out << "\"\n}\n\n";
+}
+
+void control_data(std::ostream &out, const std::string &name,
+                  const std::vector<Connection> &links)
+{
+    Bytes data;
+    append_word(data, links.size());
+
+    for (const auto &link : links)
+        data.insert(data.end(), link.bytes.begin(), link.bytes.end());
+
+    private_data(out, name, SND_SOC_AR_TPLG_CONTROL_LINK_TYPE, data);
 }
 
 void tuples(std::ostream &out, const std::string &name,
