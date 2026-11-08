@@ -184,6 +184,13 @@ def voice_fixture(empty=False, multi=False):
     return source
 
 
+def logger_fixture():
+    source = fixture()
+    source["graph_open"] = bytes.fromhex(source["graph_open"]).replace(
+        words(0x07001005), words(0x0700101A)).hex()
+    return source
+
+
 def widgets(data, kinds=None, blocks=None):
     position = 0
     result = {}
@@ -436,6 +443,19 @@ class CompilerTest(unittest.TestCase):
         report = json.loads(self.report.read_text())["graphs"][0]
         self.assertIn("voice-module-reference",
                       {i["kind"] for i in report["issues"]})
+
+    def test_logger_declaration_does_not_invent_calibration(self):
+        source = logger_fixture()
+        completed = self.run_compiler(source)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        kinds = {}
+        decoded = self.read_topology(kinds)
+        self.assertEqual(kinds["m16385"], 16)
+        self.assertEqual(decoded["m16385"][2][200], 0x0700101A)
+        self.assertTrue({259, 260, 261}.isdisjoint(decoded["m16385"][2]))
+        report = json.loads(self.report.read_text())["graphs"][0]
+        self.assertEqual(report["source"], source)
+        self.assertFalse(report["runtime_bindings"])
 
     def test_shared_container_is_not_split_or_renumbered(self):
         source = fixture(shared=True)

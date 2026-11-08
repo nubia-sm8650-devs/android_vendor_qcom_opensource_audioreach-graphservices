@@ -321,7 +321,8 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
 
         containers.insert(module.container);
 
-        if (module_widget_type(module.type) == "buffer")
+        if (module_widget_type(module.type) == "buffer" &&
+            module.type != 0x0700101a)
             graph.issue("compiler-module-config", module.instance,
                         module.type);
     }
