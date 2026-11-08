@@ -10,6 +10,10 @@ Supply the resource-manager XML, usecase-key XML and a merged board DTB
 to resolve physical endpoints. A base DTB without the board's audio links
 does not supply a hardware binding.
 
+Hardware links must describe DPCM backends with codec and platform
+providers. Disabled providers, including those below disabled ancestors,
+do not qualify a port. A CPU-only frontend is not a hardware binding.
+
 ```sh
 ar-acdb-topology --input graph.json --report report.json \
     --resource-manager resourcemanager_pineapple_mtp.xml \
