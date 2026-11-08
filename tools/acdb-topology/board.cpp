@@ -178,6 +178,46 @@ Json::Value backend_transport(const std::string &backend)
     return {};
 }
 
+bool haptics_over_wsa(xmlNode *root)
+{
+    for (auto *config = root->children; config; config = config->next) {
+        if (!named(config, "config_params"))
+            continue;
+
+        for (auto *node = config->children; node; node = node->next) {
+            if (named(node, "param") &&
+                attribute(node, "key") == "haptics_through_wsa" &&
+                attribute(node, "value") == "true")
+                return true;
+        }
+    }
+
+    return false;
+}
+
+xmlNode *haptics_backend(xmlNode *profile)
+{
+    xmlNode *result = nullptr;
+
+    for (auto *usecase = profile->children; usecase; usecase = usecase->next) {
+        if (!named(usecase, "usecase"))
+            continue;
+
+        for (auto *node = usecase->children; node; node = node->next) {
+            if (named(node, "backend_name")) {
+                result = node;
+            } else if (named(node, "custom-config")) {
+                for (auto *item = node->children; item; item = item->next) {
+                    if (named(item, "backend_name"))
+                        result = item;
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
 Json::Value dai_transport(uint32_t id)
 {
     if (id == 104 || (id >= 129 && id <= 135)) {
@@ -342,6 +382,7 @@ Json::Value read_board(const std::string &resources,
     result["links"] = board_links(dtb);
     result["profiles"] = Json::Value(Json::arrayValue);
     result["assignments"] = Json::Value(Json::arrayValue);
+    bool haptics_wsa = haptics_over_wsa(xmlDocGetRootElement(rm.get()));
     auto *profiles = child(xmlDocGetRootElement(rm.get()), "device_profile");
 
     for (auto *node = profiles->children; node; node = node->next) {
@@ -352,6 +393,16 @@ Json::Value read_board(const std::string &resources,
         profile["device"] = content(child(node, "id"));
         profile["backend"] = content(child(node, "back_end_name"));
         profile["xml"] = xml_text(node);
+
+        if (haptics_wsa &&
+            profile["device"] == "PAL_DEVICE_OUT_HAPTICS_DEVICE") {
+            if (auto *backend = haptics_backend(node)) {
+                profile["declared_backend"] = profile["backend"];
+                profile["backend"] = content(backend);
+                profile["backend_override"] = xml_text(backend);
+            }
+        }
+
         profile["transport"] = backend_transport(profile["backend"].asString());
         profile["links"] = Json::Value(Json::arrayValue);
 

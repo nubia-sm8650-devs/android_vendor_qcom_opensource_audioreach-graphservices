@@ -194,10 +194,11 @@ def logger_fixture():
 def hardware_fixture(family):
     source = fixture()
     usb = family.startswith("USB")
-    playback = family in ("MI2S", "USB_PLAYBACK", "DP")
+    playback = family in ("MI2S", "CODEC_DMA_PLAYBACK", "USB_PLAYBACK", "DP")
     iid = 0x4002 if playback else 0x4001
     mid = (0x07001069 if family == "DP" else
            (0x0700104F if playback else 0x07001050) if usb else
+           0x07001023 if family == "CODEC_DMA_PLAYBACK" else
            0x0700100A if playback else
            0x0700102A if family == "SLIM" else 0x07001024)
     old = 0x07001004 if playback else 0x07001005
@@ -226,8 +227,8 @@ def hardware_fixture(family):
         source["graph_keys"] = [["0xa2000000", "0xa200000a"]]
     tag = 0xC0000004 if playback else 0xC0000005
     interface = (record(0x08001019, words(0, 0, 0x00010002), target=iid)
-                 if playback else record(0x08001063, words(3, 1, 1),
-                                         target=iid))
+                 if family == "MI2S" else
+                 record(0x08001063, words(3, 1, 1), target=iid))
     defaults = record(0x08001017, words(48000, 0x00020010, 1), target=iid)
     if family == "SLIM":
         interface = record(0x08001068, words(0, 0x2221, 0), target=iid)
@@ -736,6 +737,72 @@ class CompilerTest(unittest.TestCase):
         completed = self.run_compiler(source)
         self.assertEqual(completed.returncode, 1, completed.stderr)
         self.assertFalse(self.output.exists())
+
+    def test_haptics_backend_follows_resource_manager_setting(self):
+        dtc = shutil.which("dtc") or str(COMPILER.with_name("dtc"))
+        if not Path(dtc).is_file():
+            self.skipTest("dtc is not installed")
+
+        dts = self.root / "board.dts"
+        dtb = self.root / "board.dtb"
+        dts.write_text('''/dts-v1/;
+            / {
+                backend: dais {
+                    compatible = "qcom,q6apm-lpass-dais";
+                    #sound-dai-cells = <1>;
+                };
+                sound {
+                    haptics {
+                        link-name = "Haptics Playback";
+                        cpu { sound-dai = <&backend 125>; };
+                    };
+                };
+            };
+        ''')
+        subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-o", str(dtb),
+                        str(dts)], check=True, capture_output=True)
+        rm = self.root / "resources.xml"
+        xml = '''<resource_manager_info><config_params>
+            <param key="haptics_through_wsa" value="false"/>
+            </config_params><device_profile><out-device>
+                <id>PAL_DEVICE_OUT_HAPTICS_DEVICE</id>
+                <back_end_name>CODEC_DMA-LPAIF_RXTX-RX-6</back_end_name>
+                <usecase><name>PAL_STREAM_HAPTICS</name>
+                    <custom-config key="haptics-over-wsa">
+                        <backend_name>CODEC_DMA-LPAIF_WSA2-RX-0</backend_name>
+                    </custom-config>
+                </usecase>
+            </out-device></device_profile></resource_manager_info>'''
+        rm.write_text(xml)
+        kv = self.root / "usecases.xml"
+        kv.write_text('''<graph_key_value_pair_info><devices>
+            <device id="PAL_DEVICE_OUT_HAPTICS_DEVICE"><keys_and_values>
+                <graph_kv key="0xA2000000" value="0xA2000001"/>
+            </keys_and_values></device>
+            </devices><devicepps/></graph_key_value_pair_info>''')
+        source = hardware_fixture("CODEC_DMA_PLAYBACK")
+        options = ["--resource-manager", str(rm), "--usecase-kv", str(kv),
+                   "--board-dtb", str(dtb), "--device",
+                   "PAL_DEVICE_OUT_HAPTICS_DEVICE"]
+        completed = self.run_compiler(source, *options)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.read_topology()
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report["factored"]["selections"][0]["endpoints"]
+                         ["physical"][0]["binding"]["dai"], 125)
+
+        rm.write_text(xml.replace('value="false"', 'value="true"'))
+        self.output.write_text("retain")
+        completed = self.run_compiler(source, *options)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(self.output.read_text(), "retain")
+        report = json.loads(self.report.read_text())
+        profile = report["board"]["profiles"][0]
+        self.assertEqual(profile["backend"], "CODEC_DMA-LPAIF_WSA2-RX-0")
+        self.assertEqual(profile["declared_backend"],
+                         "CODEC_DMA-LPAIF_RXTX-RX-6")
+        self.assertIn('<custom-config key="haptics-over-wsa">', profile["xml"])
+        self.assertEqual(reconstruct(report["factored"]), [source])
 
     def test_board_candidates_preserve_qualifiers_and_mismatches(self):
         dtc = shutil.which("dtc") or str(COMPILER.with_name("dtc"))
