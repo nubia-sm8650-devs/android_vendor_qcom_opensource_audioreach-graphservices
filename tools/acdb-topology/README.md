@@ -100,7 +100,14 @@ source's selected graphs and reference names. A reference can be staged while
 its peer graph is closed; resolving that peer does not add it to the source's
 selected graphs.
 
-Corpus output covers declarations and reference controls. It does not bind
-PCM ownership, DAPM activation, runtime hardware configuration or calibration.
+Each emitted graph reports `parameter_controls.set` and
+`parameter_controls.get`, bound to that graph's existing AudioReach TLV
+transport. Keep calibration in userspace and send it after graph OPEN,
+before hardware preparation. A GET writes its query and then reads the
+response through the same control. These controls do not open graphs or
+apply defaults automatically.
+
+Corpus output covers declarations, reference controls and parameter controls.
+It does not bind PCM ownership, DAPM activation or runtime hardware setup.
 `runtime_bindings` remains false. Without `--corpus`, `--exports` retains its
 individual-selection reporting behavior.
