@@ -26,12 +26,18 @@ candidates and native parameters retain their separate provenance.
 MI2S and CODEC_DMA endpoints with one qualified board port and consistent
 native parameters emit existing hardware tokens. Board-selected bank and
 interface values can override the ACDB values without changing the module,
-subgraph or graph identity. The DAI identity is recorded in the endpoint's
-`binding`, not used as a replacement graph ID.
+subgraph or graph identity. SLIMbus retains the profile's DSP device ID
+separately from its backend port and the board's DAI port. USB and DisplayPort
+also require a unique qualified board DAI. The DAI identity is recorded in
+the endpoint's `binding`, not used as a replacement graph ID.
 
 Static bindings do not set `runtime_bindings`. Rates, channel maps and
 clock ownership still come from the hardware DAI path, and calibration
 remains in userspace. MI2S word-select source follows the live DAI format.
+SLIMbus, USB and DisplayPort can emit with `dai-configured` bindings when
+native format data is absent. They emit no placeholder format token.
+Set the hardware DAI's `Data Format` control before preparing those paths.
+USB tokens are acquired from the live offload device, never from topology.
 Unsupported interfaces, ambiguous bindings and unresolved references still
 block topology output.
 
