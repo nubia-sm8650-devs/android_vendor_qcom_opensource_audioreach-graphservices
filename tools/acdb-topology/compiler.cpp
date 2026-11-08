@@ -256,9 +256,6 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
 
         if (modules.count(instance) && ports.size() > capacity(instance))
             graph.issue("port-capacity", instance, ports.size());
-
-        if (edges.size() > 8)
-            graph.issue("connection-slots", instance, edges.size());
     }
 
     if (modules.size() != graph.ports.size() ||
@@ -310,6 +307,9 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
         unsigned index = 0;
 
         for (const auto &edge : outgoing[module.instance]) {
+            if (index == 8)
+                break;
+
             uint32_t src = index ? 207 + index * 3 :
                                   AR_TKN_U32_MODULE_SRC_OP_PORT_ID;
             uint32_t dst = index ? src + 1 :
@@ -325,10 +325,26 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
         emit(name + "_sg", sg);
         emit(name + "_container", container);
         emit(name + "_module", tokens);
+        std::vector<std::string> links;
+
+        for (size_t i = 8; i < outgoing[module.instance].size(); i++) {
+            const auto &edge = outgoing[module.instance][i];
+            std::string link = name + "_link" + std::to_string(i);
+            emit(link, {{AR_TKN_U32_MODULE_SRC_OP_PORT_ID, edge[1]},
+                        {AR_TKN_U32_MODULE_DST_IN_PORT_ID, edge[3]},
+                        {AR_TKN_U32_MODULE_DST_INSTANCE_ID, edge[2]}});
+            links.push_back(link);
+        }
+
         body << "SectionWidget.\"" << name << "\" {\n    type \""
              << module_widget_type(module.type) << "\"\n    no_pm \"true\"\n"
              << "    data [ \"" << name << "_sg\" \"" << name
-             << "_container\" \"" << name << "_module\" ]\n}\n\n";
+             << "_container\" \"" << name << "_module\"";
+
+        for (const auto &link : links)
+            body << " \"" << link << "\"";
+
+        body << " ]\n}\n\n";
     }
 
     std::ostringstream out;

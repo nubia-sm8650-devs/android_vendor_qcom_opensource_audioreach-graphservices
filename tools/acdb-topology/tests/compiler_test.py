@@ -121,6 +121,31 @@ def mixed_container_fixture():
     return source
 
 
+def fanout_fixture():
+    source = fixture()
+    graph = bytes.fromhex(source["graph_open"])
+    group = words(1, 0xB0000001, 0xE0000001, 10)
+    group += words(0x07001011, 0x4001)
+    ports = words(10) + properties(0x4001, [(0x08001015, words(1, 9))])
+    for iid in range(0x4002, 0x400B):
+        group += words(0x07001002, iid)
+        ports += properties(iid, [(0x08001015, words(1, 1))])
+    old_group = words(1, 0xB0000001, 0xE0000001, 2)
+    old_group += words(0x07001005, 0x4001, 0x07001004, 0x4002)
+    old_ports = words(2) + b"".join(properties(iid, [
+        (0x08001015, words(1, 1))]) for iid in (0x4001, 0x4002))
+    graph = graph.replace(record(0x08001002, old_group),
+                          record(0x08001002, group))
+    graph = graph.replace(record(0x08001003, old_ports),
+                          record(0x08001003, ports))
+    links = words(9) + b"".join(words(0x4001, 1 + i * 2, 0x4002 + i, 2)
+                              for i in range(9))
+    graph = graph.replace(record(0x08001004, words(1, 0x4001, 1, 0x4002, 2)),
+                          record(0x08001004, links))
+    source["graph_open"] = graph.hex()
+    return source
+
+
 def host_fixture(module):
     source = fixture()
     previous = 0x07001005 if module in (0x07001000, 0x07001006) else 0x07001004
@@ -314,6 +339,17 @@ class CompilerTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 2, completed.stderr)
         report = json.loads(self.report.read_text())["graphs"][0]
         self.assertIn("port-capacity", {i["kind"] for i in report["issues"]})
+
+    def test_connections_extend_beyond_legacy_tuple_slots(self):
+        source = fanout_fixture()
+        completed = self.run_compiler(source)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        decoded = self.read_topology()
+        groups = decoded["m16385"]
+        self.assertEqual(groups[2][203], 9)
+        self.assertEqual(groups[2][230], 0x4009)
+        self.assertEqual(groups[3], {206: 17, 207: 2, 209: 0x400A})
+        self.assertEqual(len(decoded), 10)
 
     def test_shared_container_is_not_split_or_renumbered(self):
         source = fixture(shared=True)
