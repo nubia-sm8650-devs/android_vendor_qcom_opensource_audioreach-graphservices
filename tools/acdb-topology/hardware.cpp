@@ -34,7 +34,7 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
 
     std::string family = endpoint["family"].asString();
     if (family != "MI2S" && family != "CODEC_DMA" && family != "SLIM" &&
-        family != "USB_AUDIO")
+        family != "USB_AUDIO" && family != "DISPLAY_PORT")
         return result;
 
     std::set<std::array<uint32_t, 3>> ports;
@@ -79,7 +79,7 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         for (const auto &index : candidate["links"]) {
             const auto &link = board["links"][index.asUInt()];
             const auto &transport = link["transport"];
-            if (family == "USB_AUDIO")
+            if (family == "USB_AUDIO" || family == "DISPLAY_PORT")
                 ports.insert({0, 0, link["dai"].asUInt()});
             else if (family == "SLIM")
                 ports.insert({0, profile["transport"]["device"].asUInt(),
@@ -115,7 +115,8 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
     result["status"] = formats.empty() ? "missing-native-format" :
                                          "ambiguous-native-format";
 
-    bool live_format = (family == "SLIM" || family == "USB_AUDIO") &&
+    bool live_format = (family == "SLIM" || family == "USB_AUDIO" ||
+                        family == "DISPLAY_PORT") &&
                        formats.empty();
     if (!live_format && formats.size() != 1)
         return result;
@@ -131,7 +132,7 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
     if (family == "MI2S" || family == "CODEC_DMA")
         token(AR_TKN_U32_MODULE_HW_IF_TYPE, port[0]);
 
-    if (family != "USB_AUDIO")
+    if (family == "MI2S" || family == "CODEC_DMA" || family == "SLIM")
         token(AR_TKN_U32_MODULE_HW_IF_IDX, port[1]);
 
     if (!live_format)

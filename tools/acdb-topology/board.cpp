@@ -114,6 +114,14 @@ Json::Value transport(const char *family, const char *direction,
 Json::Value backend_transport(const std::string &backend)
 {
     auto parts = split(backend, '-');
+    if (parts.size() == 2 && parts[0] == "DISPLAY_PORT" && parts[1] == "RX") {
+        Json::Value result;
+        result["family"] = "DISPLAY_PORT";
+        result["direction"] = "playback";
+
+        return result;
+    }
+
     if (parts.size() == 2 && parts[0] == "USB_AUDIO" &&
         (parts[1] == "RX" || parts[1] == "TX")) {
         Json::Value result;
@@ -172,6 +180,15 @@ Json::Value backend_transport(const std::string &backend)
 
 Json::Value dai_transport(uint32_t id)
 {
+    if (id == 104 || (id >= 129 && id <= 135)) {
+        Json::Value result;
+        result["family"] = "DISPLAY_PORT";
+        result["direction"] = "playback";
+        result["port"] = id == 104 ? 0 : id - 128;
+
+        return result;
+    }
+
     if (id == 136 || id == 153) {
         Json::Value result;
         result["family"] = "USB_AUDIO";
@@ -221,8 +238,8 @@ bool matching_transport(const Json::Value &profile, const Json::Value &link)
     if (profile.isNull() || link.isNull())
         return false;
 
-    if (profile["family"] == "SLIM")
-        return link["family"] == "SLIM" &&
+    if (profile["family"] == "SLIM" || profile["family"] == "DISPLAY_PORT")
+        return profile["family"] == link["family"] &&
                profile["direction"] == link["direction"];
 
     return profile == link;
