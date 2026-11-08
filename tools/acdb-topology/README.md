@@ -23,6 +23,13 @@ Supply `--device-pp-type` for DevicePPType-qualified assignments and
 Conditions are not inferred from missing context. Reported board
 candidates and native parameters retain their separate provenance.
 
+Haptics backend selection follows the resource-manager setting
+`haptics_through_wsa`. When enabled, nested haptics backend overrides apply
+in XML order, not as generic CustomConfig-qualified profiles. The report
+retains the original backend in `declared_backend` and its override XML in
+`backend_override`. An unsupported override does not fall back to the
+original backend.
+
 MI2S and CODEC_DMA endpoints with one qualified board port and consistent
 native parameters emit existing hardware tokens. Board-selected bank and
 interface values can override the ACDB values without changing the module,
