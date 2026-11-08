@@ -41,7 +41,7 @@ int main(int argc, char **argv)
         acdb_topology::Keys keys;
         std::set<uint32_t> key_ids;
         std::string exports, input, output, report;
-        std::string resources, usecases, dtb;
+        std::string resources, usecases, dtb, selection_contexts;
         Json::Value context(Json::objectValue), devices(Json::arrayValue);
         uint32_t graph_id = 0;
         bool corpus = false;
@@ -58,7 +58,8 @@ int main(int argc, char **argv)
                           << "   --board-dtb DTB]\n"
                           << "  [--device PAL_DEVICE ... --stream-type TYPE\n"
                           << "   --device-pp-type TYPE\n"
-                          << "   --context NAME=VALUE ...]\n";
+                          << "   --context NAME=VALUE ...]\n"
+                          << "  [--selection-contexts FILE]\n";
                 return 0;
             }
 
@@ -102,6 +103,8 @@ int main(int argc, char **argv)
                 dtb = value;
             else if (option == "--device")
                 devices.append(value);
+            else if (option == "--selection-contexts")
+                selection_contexts = value;
             else if (option == "--stream-type")
                 context["StreamType"] = value;
             else if (option == "--device-pp-type")
@@ -130,8 +133,14 @@ int main(int argc, char **argv)
         if (board_inputs && board_inputs != 3)
             throw std::runtime_error("Supply all three board inputs");
 
-        if (!board_inputs && (!context.empty() || !devices.empty()))
+        if (!board_inputs && (!context.empty() || !devices.empty() ||
+                             !selection_contexts.empty()))
             throw std::runtime_error("Device context requires board inputs");
+
+        if (!selection_contexts.empty() &&
+            (!context.empty() || !devices.empty()))
+            throw std::runtime_error(
+                "Selection contexts cannot use global context");
 
         Json::Value board;
 
@@ -183,6 +192,12 @@ int main(int argc, char **argv)
 
         result["factored"] = acdb_topology::factor_sources(sources);
         acdb_topology::resolve_connections(result["factored"]);
+        if (!selection_contexts.empty()) {
+            acdb_topology::qualify_selections(result["factored"],
+                                              read_json(selection_contexts));
+            result["selection_contexts"] = selection_contexts;
+        }
+
         acdb_topology::describe_endpoints(result["factored"], board);
 
         for (size_t i = 0; i < sources.size(); i++) {

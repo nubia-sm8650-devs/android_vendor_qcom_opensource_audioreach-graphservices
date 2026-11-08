@@ -63,7 +63,8 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         for (const auto &name : conditions.getMemberNames()) {
             if (!board["context"].isMember(name))
                 missing = true;
-            else if (!contains(conditions[name].asString(),
+            else if (board["context"][name].isNull() ||
+                     !contains(conditions[name].asString(),
                                board["context"][name].asString()))
                 matches = false;
         }

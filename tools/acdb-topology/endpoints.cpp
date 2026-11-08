@@ -209,6 +209,17 @@ void describe_endpoints(Json::Value &factored, const Json::Value &board)
     const auto &groups = factored["definitions"]["module_groups"];
 
     for (auto &selection : factored["selections"]) {
+        Json::Value qualified_board;
+        const auto *selected_board = &board;
+
+        if (selection.isMember("hardware_context")) {
+            const auto &hardware = selection["hardware_context"];
+            qualified_board = board;
+            qualified_board["devices"] = hardware["devices"];
+            qualified_board["context"] = hardware["context"];
+            selected_board = &qualified_board;
+        }
+
         Json::Value result;
         const auto &metadata = selection["metadata"];
         const auto &queries = metadata["endpoint_queries"];
@@ -286,7 +297,7 @@ void describe_endpoints(Json::Value &factored, const Json::Value &board)
             }
 
             endpoint["board_candidates"] =
-                board_candidates(metadata, endpoint, board);
+                board_candidates(metadata, endpoint, *selected_board);
             result["physical"].append(endpoint);
         }
 
@@ -297,7 +308,7 @@ void describe_endpoints(Json::Value &factored, const Json::Value &board)
                                                         "unique" : "ambiguous";
         }
 
-        bind_hardware(result, board);
+        bind_hardware(result, *selected_board);
         selection["endpoints"] = std::move(result);
     }
 }

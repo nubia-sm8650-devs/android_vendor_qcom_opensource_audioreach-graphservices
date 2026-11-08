@@ -978,6 +978,81 @@ class CompilerTest(unittest.TestCase):
                                       "--context", "CustomConfig=voice-mic")
         self.assertEqual(completed.returncode, 2, completed.stderr)
 
+        sources = [hardware_fixture("CODEC_DMA"), hardware_fixture("SLIM")]
+        renamed = json.dumps(sources[1])
+        for old, new in ((0x4001, 0x4101), (0x4002, 0x4102),
+                         (0xB0000001, 0xB0000002)):
+            renamed = renamed.replace(words(old).hex(), words(new).hex())
+        sources[1] = json.loads(renamed)
+        sources[1]["subgraph_ids"] = ["0xb0000002"]
+        contexts = {"version": 1, "selections": [
+            {"graph_keys": list(reversed(sources[0]["graph_keys"])),
+             "devices": ["IN"], "context": {
+                 "StreamType": "VOICE", "DevicePPType": "MIC",
+                 "CustomConfig": "voice-mic"}},
+            {"graph_keys": list(sources[1]["graph_keys"]),
+             "devices": ["BTIN"], "context": {}}]}
+        context_file = self.root / "contexts.json"
+        context_file.write_text(json.dumps(contexts))
+        selected = [*options, "--selection-contexts", str(context_file)]
+        completed = self.run_exports(sources, *selected)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(self.report.read_text())
+        self.assertEqual(reconstruct(report["factored"]), sources)
+        endpoints = [s["endpoints"]["physical"][0]
+                     for s in report["factored"]["selections"]]
+        self.assertEqual([e["binding"]["dai"] for e in endpoints], [120, 15])
+        self.assertTrue(all(not g["runtime_bindings"]
+                            for g in report["graphs"]))
+        completed = self.run_exports(sources, *selected, "--corpus",
+                                      "--output", str(self.output))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        corpus = json.loads(self.report.read_text())["corpus"]
+        self.assertEqual([s["graphs"] for s in corpus["selections"]],
+                         [[0], [1]])
+        self.assertEqual(len(self.read_topology()), 4)
+
+        contexts["selections"][0]["context"]["CustomConfig"] = None
+        context_file.write_text(json.dumps(contexts))
+        completed = self.run_exports(sources, *selected)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        endpoint = json.loads(self.report.read_text())["factored"]
+        endpoint = endpoint["selections"][0]["endpoints"]["physical"][0]
+        self.assertEqual(endpoint["binding"]["status"],
+                         "missing-board-binding")
+        kv.write_text(kv.read_text().replace(' CustomConfig="voice-mic"', '')
+            .replace('</devicepps>', '''<devicepp id="IN">
+                <keys_and_values StreamType="VOICE" DevicePPType="MIC"
+                                 CustomConfig="voice-mic">
+                    <graph_kv key="0xA3000000" value="0xA3000007"/>
+                    <graph_kv key="0xAD000000" value="0xAD000001"/>
+                </keys_and_values>
+            </devicepp></devicepps>'''))
+        completed = self.run_exports(sources, *selected)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        endpoint = json.loads(self.report.read_text())["factored"]
+        endpoint = endpoint["selections"][0]["endpoints"]["physical"][0]
+        self.assertEqual(endpoint["binding"]["status"], "static-bound")
+
+        contexts["selections"].pop(0)
+        context_file.write_text(json.dumps(contexts))
+        completed = self.run_exports(sources, *selected)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report["factored"]["selections"][0]["endpoints"]
+                         ["physical"][0]["binding"]["status"],
+                         "unresolved-board-candidate")
+        completed = self.run_exports(sources, *selected, "--device", "IN")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        contexts["selections"][0]["graph_keys"].pop()
+        context_file.write_text(json.dumps(contexts))
+        self.output.write_text("retain")
+        completed = self.run_exports(sources, *selected, "--corpus",
+                                      "--output", str(self.output))
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertIn("matches no source", completed.stderr)
+        self.assertEqual(self.output.read_text(), "retain")
+
 
 if __name__ == "__main__":
     unittest.main()

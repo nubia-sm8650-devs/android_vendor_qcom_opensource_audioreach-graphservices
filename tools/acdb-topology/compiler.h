@@ -44,6 +44,7 @@ Compilation compile_corpus(const std::vector<Source> &sources,
 std::string module_widget_type(uint32_t module);
 Json::Value factor_sources(const std::vector<Source> &sources);
 void resolve_connections(Json::Value &factored);
+void qualify_selections(Json::Value &factored, const Json::Value &contexts);
 void describe_endpoints(Json::Value &factored, const Json::Value &board);
 void bind_hardware(Json::Value &endpoints, const Json::Value &board);
 Json::Value read_board(const std::string &resources,
