@@ -138,16 +138,6 @@ struct Graph {
     }
 };
 
-std::string widget_type(uint32_t module)
-{
-    switch (module) {
-    case 0x07001003: return "src";
-    case 0x07001004: return "encoder";
-    case 0x07001005: return "decoder";
-    default: return {};
-    }
-}
-
 void tuples(std::ostream &out, const std::string &name,
             const Tokens &tokens)
 {
@@ -234,7 +224,7 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
         if (!inserted && owner->second != module.subgraph)
             graph.issue("shared-container", module.container, module.subgraph);
 
-        if (widget_type(module.type).empty())
+        if (module_widget_type(module.type).empty())
             graph.issue("compiler-widget", module.instance, module.type);
 
         if (capacity(module.instance) > 8)
@@ -326,7 +316,7 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
         emit(name + "_container", container);
         emit(name + "_module", tokens);
         body << "SectionWidget.\"" << name << "\" {\n    type \""
-             << widget_type(module.type) << "\"\n    no_pm \"true\"\n"
+             << module_widget_type(module.type) << "\"\n    no_pm \"true\"\n"
              << "    data [ \"" << name << "_sg\" \"" << name
              << "_container\" \"" << name << "_module\" ]\n}\n\n";
     }

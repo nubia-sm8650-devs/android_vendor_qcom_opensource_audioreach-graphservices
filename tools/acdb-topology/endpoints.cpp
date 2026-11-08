@@ -182,6 +182,16 @@ Json::Value board_candidates(const Json::Value &metadata,
 
 }
 
+std::string module_widget_type(uint32_t module)
+{
+    switch (module) {
+    case 0x07001003: return "src";
+    case 0x07001004: return "encoder";
+    case 0x07001005: return "decoder";
+    default: return {};
+    }
+}
+
 void describe_endpoints(Json::Value &factored, const Json::Value &board)
 {
     const auto &groups = factored["definitions"]["module_groups"];

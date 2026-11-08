@@ -22,6 +22,7 @@ struct Compilation {
 Json::Value query_graph(const std::vector<std::string> &paths,
                        const Keys &keys);
 Compilation compile_graph(const Source &graph, uint32_t graph_id);
+std::string module_widget_type(uint32_t module);
 Json::Value factor_sources(const std::vector<Source> &sources);
 void resolve_connections(Json::Value &factored);
 void describe_endpoints(Json::Value &factored, const Json::Value &board);
