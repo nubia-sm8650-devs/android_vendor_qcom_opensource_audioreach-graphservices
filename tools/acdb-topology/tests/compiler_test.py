@@ -751,10 +751,16 @@ class CompilerTest(unittest.TestCase):
                     compatible = "qcom,q6apm-lpass-dais";
                     #sound-dai-cells = <1>;
                 };
+                codec-bus {
+                    codec0: codec { #sound-dai-cells = <0>; };
+                };
+                platform0: platform { #sound-dai-cells = <0>; };
                 sound {
                     haptics {
                         link-name = "Haptics Playback";
                         cpu { sound-dai = <&backend 125>; };
+                        codec { sound-dai = <&codec0>; };
+                        platform { sound-dai = <&platform0>; };
                     };
                 };
             };
@@ -791,6 +797,24 @@ class CompilerTest(unittest.TestCase):
         self.assertEqual(report["factored"]["selections"][0]["endpoints"]
                          ["physical"][0]["binding"]["dai"], 125)
 
+        original_dts = dts.read_text()
+        for target in ("codec { sound-dai = <&codec0>; };",
+                       "platform { sound-dai = <&platform0>; };",
+                       "codec-bus {"):
+            with self.subTest(target=target):
+                replacement = (target + ' status = "disabled";'
+                               if target == "codec-bus {" else "")
+                dts.write_text(original_dts.replace(target, replacement))
+                subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-o", str(dtb),
+                                str(dts)], check=True, capture_output=True)
+                self.output.write_text("retain")
+                completed = self.run_compiler(source, *options)
+                self.assertEqual(completed.returncode, 2, completed.stderr)
+                self.assertEqual(self.output.read_text(), "retain")
+
+        dts.write_text(original_dts)
+        subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-o", str(dtb),
+                        str(dts)], check=True, capture_output=True)
         rm.write_text(xml.replace('value="false"', 'value="true"'))
         self.output.write_text("retain")
         completed = self.run_compiler(source, *options)
@@ -816,35 +840,52 @@ class CompilerTest(unittest.TestCase):
                     compatible = "qcom,q6apm-lpass-dais";
                     #sound-dai-cells = <1>;
                 };
+                codec0: codec-a { #sound-dai-cells = <1>; };
+                codec1: codec-b { #sound-dai-cells = <0>; };
+                platform0: platform { #sound-dai-cells = <0>; };
                 sound {
                     speaker {
                         link-name = "Speaker Playback";
                         cpu { sound-dai = <&backend 16>; };
+                        codec { sound-dai = <&codec0 0>; };
+                        platform { sound-dai = <&platform0>; };
                     };
                     capture {
                         link-name = "WCD Capture";
                         cpu { sound-dai = <&backend 120>; };
+                        codec { sound-dai = <&codec0 1>, <&codec1>; };
+                        platform { sound-dai = <&platform0>; };
                     };
                     bt {
                         link-name = "BT Capture";
                         cpu { sound-dai = <&backend 15>; };
+                        codec { sound-dai = <&codec0 0>; };
+                        platform { sound-dai = <&platform0>; };
                     };
                     usb_rx {
                         link-name = "USB Playback";
                         cpu { sound-dai = <&backend 136>; };
+                        codec { sound-dai = <&codec0 0>; };
+                        platform { sound-dai = <&platform0>; };
                     };
                     usb_tx {
                         link-name = "USB Capture";
                         cpu { sound-dai = <&backend 153>; };
+                        codec { sound-dai = <&codec0 0>; };
+                        platform { sound-dai = <&platform0>; };
                     };
                     dp {
                         link-name = "DP Playback";
                         cpu { sound-dai = <&backend 131>; };
+                        codec { sound-dai = <&codec0 0>; };
+                        platform { sound-dai = <&platform0>; };
                     };
                     disabled {
                         status = "disabled";
                         link-name = "Unused Playback";
                         cpu { sound-dai = <&backend 16>; };
+                        codec { sound-dai = <&codec0 0>; };
+                        platform { sound-dai = <&platform0>; };
                     };
                 };
             };
@@ -953,6 +994,8 @@ class CompilerTest(unittest.TestCase):
         dts.write_text(original_dts.replace("disabled {", '''extra_bt {
             link-name = "Other BT Capture";
             cpu { sound-dai = <&backend 13>; };
+            codec { sound-dai = <&codec0 0>; };
+            platform { sound-dai = <&platform0>; };
         };
         disabled {'''))
         subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-o", str(dtb),

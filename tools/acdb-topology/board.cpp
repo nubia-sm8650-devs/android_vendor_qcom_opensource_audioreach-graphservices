@@ -310,6 +310,47 @@ bool available(const void *dtb, int node)
     return true;
 }
 
+bool backend_available(const void *dtb, int node)
+{
+    int codec = fdt_subnode_offset(dtb, node, "codec");
+    int platform = fdt_subnode_offset(dtb, node, "platform");
+    if (codec < 0 || platform < 0 || !available(dtb, codec) ||
+        !available(dtb, platform))
+        return false;
+
+    int size;
+    auto *dai = static_cast<const fdt32_t *>(
+        fdt_getprop(dtb, platform, "sound-dai", &size));
+    if (!dai || size < 4)
+        return false;
+
+    int provider = fdt_node_offset_by_phandle(dtb, fdt32_to_cpu(*dai));
+    if (provider < 0 || !available(dtb, provider))
+        return false;
+
+    dai = static_cast<const fdt32_t *>(
+        fdt_getprop(dtb, codec, "sound-dai", &size));
+    if (!dai || size <= 0 || size % 4)
+        return false;
+
+    int count = size / 4;
+
+    for (int i = 0; i < count;) {
+        provider = fdt_node_offset_by_phandle(dtb, fdt32_to_cpu(dai[i++]));
+        if (provider < 0 || !available(dtb, provider))
+            return false;
+
+        auto *cells = static_cast<const fdt32_t *>(
+            fdt_getprop(dtb, provider, "#sound-dai-cells", &size));
+        if (!cells || size != 4 || fdt32_to_cpu(*cells) > uint32_t(count - i))
+            return false;
+
+        i += fdt32_to_cpu(*cells);
+    }
+
+    return true;
+}
+
 std::string dt_path(const void *dtb, int node)
 {
     std::vector<char> buffer(fdt_totalsize(dtb));
@@ -336,7 +377,8 @@ Json::Value board_links(const std::string &path)
     while ((node = fdt_next_node(dtb, node, nullptr)) >= 0) {
         std::string name = dt_string(dtb, node, "link-name");
         int cpu = fdt_subnode_offset(dtb, node, "cpu");
-        if (name.empty() || cpu < 0 || !available(dtb, cpu))
+        if (name.empty() || cpu < 0 || !available(dtb, cpu) ||
+            !backend_available(dtb, node))
             continue;
 
         int size;
