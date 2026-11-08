@@ -21,6 +21,7 @@ struct Graph {
     std::map<std::pair<uint32_t, uint32_t>, Bytes> definitions;
     std::vector<Module> modules;
     std::vector<std::array<uint32_t, 4>> edges;
+    std::vector<Connection> control_links;
     Json::Value issues{Json::arrayValue};
 
     void issue(const std::string &kind, uint32_t object, uint32_t detail)
@@ -139,6 +140,10 @@ struct Graph {
                 for (const auto &connection : read_connections(data, false))
                     edges.push_back(connection.peers);
                 break;
+            case 0x08001061:
+                for (auto &connection : read_connections(data, true))
+                    control_links.push_back(std::move(connection));
+                break;
             default:
                 issue("parameter", target, family);
                 continue;
@@ -148,6 +153,38 @@ struct Graph {
         }
     }
 };
+
+void control_data(std::ostream &out, const std::string &name,
+                  const std::vector<Connection> &links)
+{
+    Bytes data;
+    auto word = [&](uint32_t value) {
+        for (unsigned shift = 0; shift < 32; shift += 8)
+            data.push_back(value >> shift);
+    };
+    size_t size = 12;
+
+    for (const auto &link : links)
+        size += link.bytes.size();
+
+    if (size > UINT32_MAX)
+        throw std::runtime_error("Control link block exceeds topology size");
+
+    word(size);
+    word(SND_SOC_AR_TPLG_CONTROL_LINK_TYPE);
+    word(links.size());
+
+    for (const auto &link : links)
+        data.insert(data.end(), link.bytes.begin(), link.bytes.end());
+
+    std::string bytes = hex(data);
+    out << "SectionData.\"" << name << "\" {\n    bytes \"";
+
+    for (size_t i = 0; i < bytes.size(); i += 2)
+        out << (i ? ", " : "") << "0x" << bytes.substr(i, 2);
+
+    out << "\"\n}\n\n";
+}
 
 void tuples(std::ostream &out, const std::string &name,
             const Tokens &tokens)
@@ -238,6 +275,18 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
     }
 
     std::map<uint32_t, std::vector<std::array<uint32_t, 4>>> outgoing;
+    std::map<uint32_t, std::vector<Connection>> controls;
+
+    for (const auto &link : graph.control_links) {
+        const auto &peers = link.peers;
+        if (!modules.count(peers[0]) || !modules.count(peers[2]))
+            graph.issue("external-control-reference", peers[0], peers[2]);
+
+        if (!peers[1] || !peers[3])
+            graph.issue("zero-control-port", peers[0], peers[2]);
+
+        controls[peers[0]].push_back(link);
+    }
 
     for (const auto &edge : graph.edges) {
         if (!modules.count(edge[0]) || !modules.count(edge[2]))
@@ -270,6 +319,7 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
     result.report["containers"] = Json::UInt64(graph.containers.size());
     result.report["modules"] = Json::UInt64(graph.modules.size());
     result.report["data_links"] = Json::UInt64(graph.edges.size());
+    result.report["control_links"] = Json::UInt64(graph.control_links.size());
     result.report["can_emit"] = graph.issues.empty();
     result.report["runtime_bindings"] = false;
 
@@ -334,6 +384,12 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
                         {AR_TKN_U32_MODULE_DST_IN_PORT_ID, edge[3]},
                         {AR_TKN_U32_MODULE_DST_INSTANCE_ID, edge[2]}});
             links.push_back(link);
+        }
+
+        if (!controls[module.instance].empty()) {
+            std::string control = name + "_control";
+            control_data(body, control, controls[module.instance]);
+            links.push_back(control);
         }
 
         body << "SectionWidget.\"" << name << "\" {\n    type \""

@@ -154,7 +154,21 @@ def host_fixture(module):
     return source
 
 
-def widgets(data, kinds=None):
+def control_fixture():
+    source = fixture()
+    links = words(3)
+    for source_iid, peer_iid, intent, heap in ((0x4001, 0x4002, 0x0800105D, 0),
+                                             (0x4002, 0x4001, 0x0800105E, 1)):
+        links += words(source_iid, 7, peer_iid, 8, 2)
+        links += words(0x08001062, 8, 1, intent, 0x0800136F, 4, heap)
+        if source_iid == 0x4001:
+            links += words(source_iid, 9, peer_iid, 10, 1,
+                           0x08001062, 8, 1, intent)
+    source["graph_open"] += record(0x08001061, links).hex()
+    return source
+
+
+def widgets(data, kinds=None, blocks=None):
     position = 0
     result = {}
     while position < len(data):
@@ -178,9 +192,15 @@ def widgets(data, kinds=None):
             while position < private_end:
                 length, tag, elements = struct.unpack_from("<3I", data,
                                                           position)
-                assert tag == 4 and length == 12 + elements * 8
-                groups.append(dict(struct.iter_unpack(
-                    "<2I", data[position + 12:position + length])))
+                if tag == 4:
+                    assert length == 12 + elements * 8
+                    groups.append(dict(struct.iter_unpack(
+                        "<2I", data[position + 12:position + length])))
+                else:
+                    assert tag == 0x08001061
+                    if blocks is not None:
+                        blocks.setdefault(name.decode(), []).append(
+                            data[position:position + length])
                 position += length
             assert position == private_end
             result[name.decode()] = groups
@@ -229,13 +249,13 @@ class CompilerTest(unittest.TestCase):
             str(COMPILER), "--exports", str(directory), "--report",
             str(self.report)], capture_output=True, text=True)
 
-    def read_topology(self, kinds=None):
+    def read_topology(self, kinds=None, blocks=None):
         if not shutil.which("alsatplg"):
             self.skipTest("alsatplg is not installed")
         binary = self.root / "topology.bin"
         subprocess.run(["alsatplg", "-c", str(self.output), "-o", str(binary)],
                        check=True, capture_output=True)
-        return widgets(binary.read_bytes(), kinds)
+        return widgets(binary.read_bytes(), kinds, blocks)
 
     def test_conventional_topology_preserves_declarations(self):
         source = fixture()
@@ -350,6 +370,28 @@ class CompilerTest(unittest.TestCase):
         self.assertEqual(groups[2][230], 0x4009)
         self.assertEqual(groups[3], {206: 17, 207: 2, 209: 0x400A})
         self.assertEqual(len(decoded), 10)
+
+    def test_control_links_keep_peers_intents_and_heap_properties(self):
+        source = control_fixture()
+        completed = self.run_compiler(source)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(self.report.read_text())["graphs"][0]
+        self.assertEqual(report["source"], source)
+        self.assertEqual(report["control_links"], 3)
+        blocks = {}
+        self.read_topology(blocks=blocks)
+        for iid, peer, intent, heap in ((0x4001, 0x4002, 0x0800105D, 0),
+                                        (0x4002, 0x4001, 0x0800105E, 1)):
+            block, = blocks[f"m{iid}"]
+            payload = words(iid, 7, peer, 8, 2, 0x08001062, 8, 1, intent,
+                            0x0800136F, 4, heap)
+            count = 1
+            if iid == 0x4001:
+                payload += words(iid, 9, peer, 10, 1,
+                                 0x08001062, 8, 1, intent)
+                count += 1
+            self.assertEqual(block, words(12 + len(payload), 0x08001061,
+                                           count) + payload)
 
     def test_shared_container_is_not_split_or_renumbered(self):
         source = fixture(shared=True)
