@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "compiler.h"
 
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <sound/snd_ar_tokens.h>
@@ -69,6 +70,41 @@ std::string Topology::render() const
     out << "}\n\n" << body;
 
     return out.str();
+}
+
+Json::Value parameter_controls(Topology &topology, uint32_t graph_id)
+{
+    std::ostringstream out;
+    Json::Value result;
+    std::string prefix = "ar_g" + std::to_string(graph_id);
+    std::string data = prefix + "_params";
+    tuples(out, data, {{AR_TKN_DAI_INDEX, graph_id}});
+    topology.tokens.insert(AR_TKN_DAI_INDEX);
+
+    for (const char *operation : {"set", "get"}) {
+        bool get = std::string(operation) == "get";
+        std::string name = prefix + "_" + operation;
+        uint32_t opcode = get ? SND_SOC_AR_TPLG_GET_PARAMS :
+                                SND_SOC_AR_TPLG_SET_PARAMS;
+        result[operation] = name;
+        out << "SectionControlBytes.\"" << name << "\" {\n"
+            << "    max \"" << std::numeric_limits<int32_t>::max() << "\"\n"
+            << "    access [ \"tlv_write\" \"tlv_callback\"";
+
+        if (get)
+            out << " \"tlv_read\"";
+
+        out << " ]\n    extops.\"ctl\" { put \"" << opcode << "\"";
+
+        if (get)
+            out << " get \"" << opcode << "\"";
+
+        out << " }\n    data [ \"" << data << "\" ]\n}\n\n";
+    }
+
+    topology.body += out.str();
+
+    return result;
 }
 
 }

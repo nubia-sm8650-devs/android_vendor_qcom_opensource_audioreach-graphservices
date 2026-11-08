@@ -450,6 +450,9 @@ Compilation compile_graph(const Source &input, uint32_t graph_id,
 
     result.topology.body = body.str();
 
+    result.report["parameter_controls"] =
+        parameter_controls(result.topology, graph_id);
+
     return result;
 }
 

@@ -314,6 +314,39 @@ def widgets(data, kinds=None, blocks=None):
     return result
 
 
+def parameter_controls(data):
+    result = {}
+    position = 0
+
+    while position < len(data):
+        header = struct.unpack_from("<9I", data, position)
+        position += header[4]
+        end = position + header[6]
+
+        if header[3] != 2:
+            position = end
+            continue
+
+        for _ in range(header[8]):
+            header_size = 204
+            name = data[position + 8:position + 52].split(b"\0")[0].decode()
+            access, = struct.unpack_from("<I", data, position + 52)
+            size, maximum, _, _, _, get, put, _ = struct.unpack_from(
+                "<8I", data, position + header_size)
+            private_size, = struct.unpack_from("<I", data, position + size - 4)
+            private = data[position + size:position + size + private_size]
+            length, kind, count, token, graph = struct.unpack("<5I", private)
+            assert length == len(private) and kind == 4 and count == 1
+            assert token == 1
+            result[name] = {"access": access, "max": maximum, "get": get,
+                            "put": put, "graph": graph}
+            position += size + private_size
+
+        assert position == end
+
+    return result
+
+
 def append_modules(source, modules):
     group = words(1, 0xB0000001, 0xE0000001, len(modules))
     ports = words(len(modules))
@@ -402,6 +435,33 @@ class CompilerTest(unittest.TestCase):
         subgraph = json.loads(self.report.read_text())["corpus"]["subgraphs"][0]
         self.assertFalse(subgraph["can_emit"])
         self.assertEqual(self.output.read_text(), "retain")
+
+    def test_parameter_controls_keep_canonical_graph_scope(self):
+        sources = corpus_fixtures()
+        completed = self.run_exports(sources, "--corpus", "--graph-id", "256",
+                                      "--output", str(self.output))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.read_topology()
+        controls = parameter_controls((self.root / "topology.bin").read_bytes())
+        corpus = json.loads(self.report.read_text())["corpus"]
+        self.assertFalse(corpus["runtime_bindings"])
+        self.assertEqual(reconstruct(json.loads(self.report.read_text())
+                                     ["factored"]), sources)
+        expected_names = set()
+
+        for graph in corpus["subgraphs"]:
+            for operation, name in graph["parameter_controls"].items():
+                expected_names.add(name)
+                control = controls[name]
+                get = operation == "get"
+                self.assertEqual(control["graph"], graph["graph_id"])
+                self.assertEqual(control["put"], 259 if get else 258)
+                self.assertEqual(control["get"], 259 if get else 0)
+                self.assertEqual(control["access"], 0x10000030 if get else
+                                                       0x10000020)
+                self.assertGreater(control["max"], 8 * 1024 * 1024)
+
+        self.assertEqual(set(controls), expected_names)
 
     def read_topology(self, kinds=None, blocks=None):
         if not shutil.which("alsatplg"):
