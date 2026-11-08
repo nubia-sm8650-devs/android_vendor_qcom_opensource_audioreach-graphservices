@@ -33,7 +33,7 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
     result["status"] = "unsupported-interface";
 
     std::string family = endpoint["family"].asString();
-    if (family != "MI2S" && family != "CODEC_DMA")
+    if (family != "MI2S" && family != "CODEC_DMA" && family != "SLIM")
         return result;
 
     std::set<std::array<uint32_t, 3>> ports;
@@ -78,8 +78,13 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         for (const auto &index : candidate["links"]) {
             const auto &link = board["links"][index.asUInt()];
             const auto &transport = link["transport"];
-            ports.insert({transport["bank"].asUInt(),
-                          transport["index"].asUInt(), link["dai"].asUInt()});
+            if (family == "SLIM")
+                ports.insert({0, profile["transport"]["device"].asUInt(),
+                              link["dai"].asUInt()});
+            else
+                ports.insert({transport["bank"].asUInt(),
+                              transport["index"].asUInt(),
+                              link["dai"].asUInt()});
         }
 
         sources.append(i);
@@ -107,7 +112,8 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
     result["status"] = formats.empty() ? "missing-native-format" :
                                          "ambiguous-native-format";
 
-    if (formats.size() != 1)
+    bool live_format = family == "SLIM" && formats.empty();
+    if (!live_format && formats.size() != 1)
         return result;
 
     Json::Value tokens(Json::arrayValue);
@@ -118,9 +124,12 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         tokens.append(pair);
     };
     const auto &port = *ports.begin();
-    token(AR_TKN_U32_MODULE_HW_IF_TYPE, port[0]);
+    if (family != "SLIM")
+        token(AR_TKN_U32_MODULE_HW_IF_TYPE, port[0]);
+
     token(AR_TKN_U32_MODULE_HW_IF_IDX, port[1]);
-    token(AR_TKN_U32_MODULE_FMT_DATA, *formats.begin());
+    if (!live_format)
+        token(AR_TKN_U32_MODULE_FMT_DATA, *formats.begin());
 
     if (family == "MI2S") {
         std::set<std::array<uint32_t, 2>> interfaces;
@@ -149,7 +158,10 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         token(AR_TKN_U32_MODULE_WS_SRC, interfaces.begin()->at(1));
     }
 
-    result["status"] = "static-bound";
+    result["status"] = live_format ? "dai-configured" : "static-bound";
+    if (live_format)
+        result["required_runtime_format"] = true;
+
     result["dai"] = port[2];
     result["tokens"] = tokens;
     result["candidates"] = sources;

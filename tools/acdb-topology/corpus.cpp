@@ -91,7 +91,8 @@ Json::Value hardware(const Json::Value &endpoints, uint32_t subgraph)
         value["module"] = endpoint["module"];
         value["binding"]["status"] = endpoint["binding"]["status"];
 
-        if (endpoint["binding"]["status"] == "static-bound") {
+        if (endpoint["binding"]["status"] == "static-bound" ||
+            endpoint["binding"]["status"] == "dai-configured") {
             value["binding"]["tokens"] = endpoint["binding"]["tokens"];
             value["binding"]["dai"] = endpoint["binding"]["dai"];
         }

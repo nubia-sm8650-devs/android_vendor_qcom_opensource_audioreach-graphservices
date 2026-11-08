@@ -195,7 +195,8 @@ def hardware_fixture(family):
     source = fixture()
     playback = family == "MI2S"
     iid = 0x4002 if playback else 0x4001
-    mid = 0x0700100A if playback else 0x07001024
+    mid = (0x0700100A if playback else
+           0x0700102A if family == "SLIM" else 0x07001024)
     old = 0x07001004 if playback else 0x07001005
     graph = bytes.fromhex(source["graph_open"])
     graph = graph.replace(words(old), words(mid))
@@ -213,10 +214,16 @@ def hardware_fixture(family):
     source["graph_keys"] = ([["0xa2000000", "0xa2000001"]] if playback else
                             [["0xa3000000", "0xa3000007"],
                              ["0xad000000", "0xad000001"]])
+    if family == "SLIM":
+        source["graph_keys"] = [["0xa3000000", "0xa3000009"]]
     tag = 0xC0000004 if playback else 0xC0000005
     interface = (record(0x08001019, words(0, 0, 0x00010002), target=iid)
                  if playback else record(0x08001063, words(3, 1, 1),
                                          target=iid))
+    defaults = record(0x08001017, words(48000, 0x00020010, 1), target=iid)
+    if family == "SLIM":
+        interface = record(0x08001068, words(0, 0x2221, 0), target=iid)
+        defaults = record(0x08001018, words(1), target=iid)
     source["endpoint_queries"] = {
         "tags": {"present": True, "count": 1,
                  "data": words(tag, 1, mid, iid).hex()},
@@ -225,8 +232,7 @@ def hardware_fixture(family):
         "hardware_tag_data": [{"variant": 0, "queried": True,
                                "present": True, "data": interface.hex()}],
         "empty_ckv_defaults": {"present": True, "modules": [iid],
-            "data": record(0x08001017, words(48000, 0x00020010, 1),
-                           target=iid).hex()},
+            "data": defaults.hex()},
     }
     return source
 
@@ -738,6 +744,10 @@ class CompilerTest(unittest.TestCase):
                         link-name = "WCD Capture";
                         cpu { sound-dai = <&backend 120>; };
                     };
+                    bt {
+                        link-name = "BT Capture";
+                        cpu { sound-dai = <&backend 15>; };
+                    };
                     disabled {
                         status = "disabled";
                         link-name = "Unused Playback";
@@ -762,6 +772,9 @@ class CompilerTest(unittest.TestCase):
             <in-device><id>FEEDBACK</id>
                 <back_end_name>MI2S-LPAIF-TX-PRIMARY</back_end_name>
             </in-device>
+            <in-device><id>BTIN</id>
+                <back_end_name>SLIM-DEV2-TX-7</back_end_name>
+            </in-device>
             </device_profile></resource_manager_info>''')
         kv = self.root / "usecases.xml"
         kv.write_text('''<graph_key_value_pair_info>
@@ -773,7 +786,10 @@ class CompilerTest(unittest.TestCase):
                     <graph_kv key="0xA3000000" value="0xA3000007"/>
                     <graph_kv key="0xAD000000" value="0xAD000001"/>
                 </keys_and_values>
-            </devicepp></devicepps></graph_key_value_pair_info>''')
+            </devicepp><devicepp id="BTIN"><keys_and_values>
+                <graph_kv key="0xA3000000" value="0xA3000009"/>
+            </keys_and_values></devicepp></devicepps>
+            </graph_key_value_pair_info>''')
         source = fixture()
         source["graph_keys"] = [["0xa2000000", "0xa2000001"],
                                 ["0xa3000000", "0xa3000007"],
@@ -787,7 +803,8 @@ class CompilerTest(unittest.TestCase):
         self.assertEqual(reconstruct(result["factored"]), [source])
         check_endpoints(result["factored"], [source])
         board = result["board"]
-        self.assertEqual([link["dai"] for link in board["links"]], [16, 120])
+        self.assertEqual([link["dai"] for link in board["links"]],
+                         [16, 120, 15])
         self.assertEqual(board["assignments"][1]["conditions"], {
             "StreamType": "VOICE,SENSOR", "DevicePPType": "MIC"})
         self.assertIn("<samplerate>16000</samplerate>",
@@ -807,6 +824,38 @@ class CompilerTest(unittest.TestCase):
         endpoints = json.loads(self.report.read_text())["factored"]
         endpoints = endpoints["selections"][0]["endpoints"]["physical"]
         self.assertEqual(endpoints[1]["board_candidates"], [])
+
+        source = hardware_fixture("SLIM")
+        completed = self.run_compiler(source, *options, "--device", "BTIN")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        decoded = self.read_topology()
+        self.assertEqual(decoded["m16385"][2][250], 1)
+        self.assertNotIn(253, decoded["m16385"][2])
+        report = json.loads(self.report.read_text())
+        endpoint = report["factored"]["selections"][0]["endpoints"]
+        endpoint = endpoint["physical"][0]
+        self.assertEqual(endpoint["binding"]["dai"], 15)
+        self.assertEqual(endpoint["binding"]["status"], "dai-configured")
+        self.assertTrue(endpoint["binding"]["required_runtime_format"])
+        self.assertEqual(endpoint["tag_parameters"][0]["parameters"][0]
+                         ["payload"], words(0, 0x2221, 0).hex())
+        original_dts = dts.read_text()
+        dts.write_text(original_dts.replace("disabled {", '''extra_bt {
+            link-name = "Other BT Capture";
+            cpu { sound-dai = <&backend 13>; };
+        };
+        disabled {'''))
+        subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-o", str(dtb),
+                        str(dts)], check=True, capture_output=True)
+        completed = self.run_compiler(source, *options, "--device", "BTIN")
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        endpoint = json.loads(self.report.read_text())["factored"]
+        endpoint = endpoint["selections"][0]["endpoints"]["physical"][0]
+        self.assertEqual(endpoint["binding"]["status"],
+                         "ambiguous-board-binding")
+        dts.write_text(original_dts)
+        subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-o", str(dtb),
+                        str(dts)], check=True, capture_output=True)
 
         source = hardware_fixture("MI2S")
         completed = self.run_compiler(source, *options, "--device", "OUT")

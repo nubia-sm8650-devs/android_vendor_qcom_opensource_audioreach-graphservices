@@ -253,7 +253,8 @@ Compilation compile_graph(const Source &input, uint32_t graph_id,
 
     for (const auto &endpoint : endpoints["physical"]) {
         const auto &binding = endpoint["binding"];
-        if (binding["status"] != "static-bound")
+        if (binding["status"] != "static-bound" &&
+            binding["status"] != "dai-configured")
             continue;
 
         for (const auto &pair : binding["tokens"])

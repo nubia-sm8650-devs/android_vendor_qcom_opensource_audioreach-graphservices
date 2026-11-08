@@ -119,6 +119,17 @@ Json::Value backend_transport(const std::string &backend)
 
     const char *direction = parts[2] == "RX" ? "playback" : "capture";
 
+    if (parts[0] == "SLIM" &&
+        (parts[1] == "DEV1" || parts[1] == "DEV2")) {
+        Json::Value result;
+        result["family"] = "SLIM";
+        result["direction"] = direction;
+        result["device"] = parts[1] == "DEV1" ? 0 : 1;
+        result["backend_port"] = read_number(parts[3]);
+
+        return result;
+    }
+
     if (parts[0] == "MI2S" && parts[1] == "LPAIF") {
         const std::vector<std::string> indices{
             "PRIMARY", "SECONDARY", "TERTIARY", "QUATERNARY",
@@ -152,6 +163,15 @@ Json::Value backend_transport(const std::string &backend)
 
 Json::Value dai_transport(uint32_t id)
 {
+    if (id >= 2 && id <= 15) {
+        Json::Value result;
+        result["family"] = "SLIM";
+        result["direction"] = id % 2 ? "capture" : "playback";
+        result["port"] = (id - 2) / 2;
+
+        return result;
+    }
+
     if (id >= 16 && id <= 23)
         return transport("MI2S", id % 2 ? "capture" : "playback",
                            0, (id - 16) / 2);
@@ -177,6 +197,18 @@ Json::Value dai_transport(uint32_t id)
         return transport("CODEC_DMA", "playback", 1, id - 118);
 
     return {};
+}
+
+bool matching_transport(const Json::Value &profile, const Json::Value &link)
+{
+    if (profile.isNull() || link.isNull())
+        return false;
+
+    if (profile["family"] == "SLIM")
+        return link["family"] == "SLIM" &&
+               profile["direction"] == link["direction"];
+
+    return profile == link;
 }
 
 std::string dt_string(const void *dtb, int node, const char *name)
@@ -290,8 +322,8 @@ Json::Value read_board(const std::string &resources,
         profile["links"] = Json::Value(Json::arrayValue);
 
         for (Json::ArrayIndex i = 0; i < result["links"].size(); i++) {
-            if (!profile["transport"].isNull() &&
-                profile["transport"] == result["links"][i]["transport"])
+            if (matching_transport(profile["transport"],
+                                     result["links"][i]["transport"]))
                 profile["links"].append(i);
         }
 
