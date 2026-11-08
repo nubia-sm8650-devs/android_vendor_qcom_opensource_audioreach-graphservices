@@ -41,6 +41,39 @@ USB tokens are acquired from the live offload device, never from topology.
 Unsupported interfaces, ambiguous bindings and unresolved references still
 block topology output.
 
+For a corpus with different device contexts, pass `--selection-contexts FILE`
+instead of global device and selector options. Each entry matches one complete
+graph-key vector, independent of key order. For example, a speaker selection
+can use the following context file.
+
+```json
+{
+  "version": 1,
+  "selections": [
+    {
+      "graph_keys": [
+        ["0xa1000000", "0xa1000001"],
+        ["0xab000000", "0x1"],
+        ["0xa2000000", "0xa2000001"],
+        ["0xac000000", "0xac000002"]
+      ],
+      "devices": ["PAL_DEVICE_OUT_SPEAKER"],
+      "context": {"StreamType": "PAL_STREAM_DEEP_BUFFER"}
+    }
+  ]
+}
+```
+
+Entries must match an input selection. Unlisted selections retain normal
+qualification checks without borrowing another entry's context. Applied
+contexts appear in `factored.selections[].hardware_context`; original source
+metadata and native buffers remain unchanged. Supplying a context does not
+relax interface, ambiguity or corpus-conflict checks.
+
+Use a JSON `null` for a selector known to be absent, such as
+`"CustomConfig": null` when no device custom configuration is set. An omitted
+selector remains unknown and blocks qualification if a candidate requires it.
+
 ## Corpus declarations
 
 Use `--exports DIRECTORY --corpus --output topology.conf` to lower a corpus
