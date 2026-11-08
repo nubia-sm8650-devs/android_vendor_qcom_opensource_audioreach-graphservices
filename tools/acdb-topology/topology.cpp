@@ -1,0 +1,74 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
+#include "compiler.h"
+
+#include <sstream>
+#include <stdexcept>
+#include <sound/snd_ar_tokens.h>
+
+namespace acdb_topology
+{
+
+void append_word(Bytes &data, uint32_t value)
+{
+    for (unsigned shift = 0; shift < 32; shift += 8)
+        data.push_back(value >> shift);
+}
+
+void private_data(std::ostream &out, const std::string &name,
+                  uint32_t type, const Bytes &payload)
+{
+    if (payload.size() > UINT32_MAX - 8)
+        throw std::runtime_error("Private data block exceeds topology size");
+
+    Bytes data;
+    append_word(data, 8 + payload.size());
+    append_word(data, type);
+    data.insert(data.end(), payload.begin(), payload.end());
+
+    std::string bytes = hex(data);
+    out << "SectionData.\"" << name << "\" {\n    bytes \"";
+
+    for (size_t i = 0; i < bytes.size(); i += 2)
+        out << (i ? ", " : "") << "0x" << bytes.substr(i, 2);
+
+    out << "\"\n}\n\n";
+}
+
+void control_data(std::ostream &out, const std::string &name,
+                  const std::vector<Connection> &links)
+{
+    Bytes data;
+    append_word(data, links.size());
+
+    for (const auto &link : links)
+        data.insert(data.end(), link.bytes.begin(), link.bytes.end());
+
+    private_data(out, name, SND_SOC_AR_TPLG_CONTROL_LINK_TYPE, data);
+}
+
+void tuples(std::ostream &out, const std::string &name, const Tokens &tokens)
+{
+    out << "SectionVendorTuples.\"" << name << "\" {\n"
+        << "    tokens \"ar\"\n    tuples.\"word\" {\n";
+
+    for (auto [token, value] : tokens)
+        out << "        t" << token << " \"" << value << "\"\n";
+
+    out << "    }\n}\nSectionData.\"" << name << "\" {\n"
+        << "    tuples \"" << name << "\"\n}\n\n";
+}
+
+std::string Topology::render() const
+{
+    std::ostringstream out;
+    out << "SectionVendorTokens.\"ar\" {\n";
+
+    for (uint32_t token : tokens)
+        out << "    t" << token << " \"" << token << "\"\n";
+
+    out << "}\n\n" << body;
+
+    return out.str();
+}
+
+}

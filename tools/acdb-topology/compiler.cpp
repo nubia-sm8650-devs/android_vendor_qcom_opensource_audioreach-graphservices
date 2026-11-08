@@ -14,8 +14,6 @@ namespace acdb_topology
 namespace
 {
 
-using Tokens = std::vector<std::pair<uint32_t, uint32_t>>;
-
 struct Graph {
     std::map<uint32_t, Tokens> subgraphs, containers, ports;
     std::map<std::pair<uint32_t, uint32_t>, Bytes> definitions;
@@ -200,57 +198,6 @@ struct Graph {
     }
 };
 
-void append_word(Bytes &data, uint32_t value)
-{
-    for (unsigned shift = 0; shift < 32; shift += 8)
-        data.push_back(value >> shift);
-}
-
-void private_data(std::ostream &out, const std::string &name,
-                  uint32_t type, const Bytes &payload)
-{
-    if (payload.size() > UINT32_MAX - 8)
-        throw std::runtime_error("Private data block exceeds topology size");
-
-    Bytes data;
-    append_word(data, 8 + payload.size());
-    append_word(data, type);
-    data.insert(data.end(), payload.begin(), payload.end());
-
-    std::string bytes = hex(data);
-    out << "SectionData.\"" << name << "\" {\n    bytes \"";
-
-    for (size_t i = 0; i < bytes.size(); i += 2)
-        out << (i ? ", " : "") << "0x" << bytes.substr(i, 2);
-
-    out << "\"\n}\n\n";
-}
-
-void control_data(std::ostream &out, const std::string &name,
-                  const std::vector<Connection> &links)
-{
-    Bytes data;
-    append_word(data, links.size());
-
-    for (const auto &link : links)
-        data.insert(data.end(), link.bytes.begin(), link.bytes.end());
-
-    private_data(out, name, SND_SOC_AR_TPLG_CONTROL_LINK_TYPE, data);
-}
-
-void tuples(std::ostream &out, const std::string &name,
-            const Tokens &tokens)
-{
-    out << "SectionVendorTuples.\"" << name << "\" {\n"
-        << "    tokens \"ar\"\n    tuples.\"word\" {\n";
-
-    for (auto [token, value] : tokens)
-        out << "        t" << token << " \"" << value << "\"\n";
-
-    out << "    }\n}\nSectionData.\"" << name << "\" {\n"
-        << "    tuples \"" << name << "\"\n}\n\n";
-}
-
 }
 
 Compilation compile_graph(const Source &input, uint32_t graph_id,
@@ -411,7 +358,7 @@ Compilation compile_graph(const Source &input, uint32_t graph_id,
         return result;
 
     std::ostringstream body;
-    std::set<uint32_t> used_tokens;
+    auto &used_tokens = result.topology.tokens;
     std::set<uint32_t> emitted_voice;
 
     auto emit = [&](const std::string &name, const Tokens &tokens) {
@@ -498,14 +445,7 @@ Compilation compile_graph(const Source &input, uint32_t graph_id,
         body << " ]\n}\n\n";
     }
 
-    std::ostringstream out;
-    out << "SectionVendorTokens.\"ar\" {\n";
-
-    for (uint32_t token : used_tokens)
-        out << "    t" << token << " \"" << token << "\"\n";
-
-    out << "}\n\n" << body.str();
-    result.topology = out.str();
+    result.topology.body = body.str();
 
     return result;
 }

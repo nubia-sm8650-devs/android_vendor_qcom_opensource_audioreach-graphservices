@@ -192,7 +192,7 @@ int main(int argc, char **argv)
             }
 
             result["graphs"].append(compiled.report);
-            topology = std::move(compiled.topology);
+            topology = compiled.topology.render();
         }
 
         result["issues"] = counts;
