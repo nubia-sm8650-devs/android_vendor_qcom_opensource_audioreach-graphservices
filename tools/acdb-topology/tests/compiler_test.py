@@ -95,6 +95,32 @@ def generic_fixture():
     return source
 
 
+def mixed_container_fixture():
+    source = fixture(shared=True)
+    graph = bytes.fromhex(source["graph_open"])
+    original = words(0xB0000002, 0xE0000001, 1, 0x07001004, 0x4002)
+    graph = graph.replace(original, words(0xB0000002, 0xE0000002, 1,
+                                          0x07001004, 0x4002))
+    sg_props = [(0x0800100E, words(1)), (0x0800100F, words(2)),
+                (0x08001010, words(1))]
+    old = record(0x08001001, words(2) + properties(0xB0000001, sg_props)
+                 + properties(0xB0000002, sg_props))
+    new = record(0x08001001, words(2) + properties(0xB0000001, [
+        *sg_props, (0x080010CC, words(0))])
+        + properties(0xB0000002, sg_props))
+    graph = graph.replace(old, new)
+    cont_props = [(0x08001011, words(1, 0x0B000001)),
+                  (0x08001012, words(1)), (0x08001013, words(4096)),
+                  (0x08001014, words(2))]
+    old = record(0x08001000, words(1) + properties(0xE0000001, cont_props))
+    new = record(0x08001000, words(2) + properties(0xE0000001, [
+        *cont_props, (0x080010CB, words(0)), (0x08001174, words(1)),
+        (0x0800124D, words(0xFFFFFFFF))])
+        + properties(0xE0000002, cont_props))
+    source["graph_open"] = graph.replace(old, new).hex()
+    return source
+
+
 def host_fixture(module):
     source = fixture()
     previous = 0x07001005 if module in (0x07001000, 0x07001006) else 0x07001004
@@ -292,11 +318,15 @@ class CompilerTest(unittest.TestCase):
     def test_shared_container_is_not_split_or_renumbered(self):
         source = fixture(shared=True)
         completed = self.run_compiler(source)
-        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(self.report.read_text())["graphs"][0]
         self.assertEqual(report["source"], source)
-        self.assertIn("shared-container", {i["kind"] for i in report["issues"]})
-        self.assertFalse(self.output.exists())
+        self.assertFalse(report["issues"])
+        decoded = self.read_topology()
+        for iid, sg in ((0x4001, 0xB0000001), (0x4002, 0xB0000002)):
+            groups = decoded[f"m{iid}"]
+            self.assertEqual(groups[0][2], sg)
+            self.assertEqual(groups[1][100], 0xE0000001)
 
     def test_factoring_preserves_choices_variants_and_opaque_records(self):
         first = fixture(shared=True)

@@ -209,7 +209,7 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
         graph.issue("empty-graph", graph_id, 0);
 
     std::map<uint32_t, const Module *> modules;
-    std::map<uint32_t, uint32_t> containers;
+    std::set<uint32_t> containers;
     std::set<uint32_t> used_subgraphs;
 
     auto capacity = [&](uint32_t instance) {
@@ -230,10 +230,7 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
 
         used_subgraphs.insert(module.subgraph);
 
-        auto [owner, inserted] = containers.emplace(module.container,
-                                                     module.subgraph);
-        if (!inserted && owner->second != module.subgraph)
-            graph.issue("shared-container", module.container, module.subgraph);
+        containers.insert(module.container);
 
         if (module_widget_type(module.type) == "buffer")
             graph.issue("compiler-module-config", module.instance,
