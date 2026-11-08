@@ -297,6 +297,7 @@ void describe_endpoints(Json::Value &factored, const Json::Value &board)
                                                         "unique" : "ambiguous";
         }
 
+        bind_hardware(result, board);
         selection["endpoints"] = std::move(result);
     }
 }

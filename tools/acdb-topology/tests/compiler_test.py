@@ -191,6 +191,46 @@ def logger_fixture():
     return source
 
 
+def hardware_fixture(family):
+    source = fixture()
+    playback = family == "MI2S"
+    iid = 0x4002 if playback else 0x4001
+    mid = 0x0700100A if playback else 0x07001024
+    old = 0x07001004 if playback else 0x07001005
+    graph = bytes.fromhex(source["graph_open"])
+    graph = graph.replace(words(old), words(mid))
+    if not playback:
+        graph = graph.replace(properties(0xB0000001, [
+            (0x0800100E, words(1)), (0x0800100F, words(2)),
+            (0x08001010, words(1))]), properties(0xB0000001, [
+            (0x0800100E, words(1)), (0x0800100F, words(1)),
+            (0x08001010, words(2))]))
+    graph = graph.replace(properties(iid, [(0x08001015, words(1, 1))]),
+                          properties(iid, [(0x08001015,
+                                           words(1, 0) if playback
+                                           else words(0, 1))]))
+    source["graph_open"] = graph.hex()
+    source["graph_keys"] = ([["0xa2000000", "0xa2000001"]] if playback else
+                            [["0xa3000000", "0xa3000007"],
+                             ["0xad000000", "0xad000001"]])
+    tag = 0xC0000004 if playback else 0xC0000005
+    interface = (record(0x08001019, words(0, 0, 0x00010002), target=iid)
+                 if playback else record(0x08001063, words(3, 1, 1),
+                                         target=iid))
+    source["endpoint_queries"] = {
+        "tags": {"present": True, "count": 1,
+                 "data": words(tag, 1, mid, iid).hex()},
+        "tag_keys": {"present": True, "count": 1,
+                     "data": words(tag, 1, 0xA9000000, 1).hex()},
+        "hardware_tag_data": [{"variant": 0, "queried": True,
+                               "present": True, "data": interface.hex()}],
+        "empty_ckv_defaults": {"present": True, "modules": [iid],
+            "data": record(0x08001017, words(48000, 0x00020010, 1),
+                           target=iid).hex()},
+    }
+    return source
+
+
 def widgets(data, kinds=None, blocks=None):
     position = 0
     result = {}
@@ -697,6 +737,55 @@ class CompilerTest(unittest.TestCase):
         endpoints = json.loads(self.report.read_text())["factored"]
         endpoints = endpoints["selections"][0]["endpoints"]["physical"]
         self.assertEqual(endpoints[1]["board_candidates"], [])
+
+        source = hardware_fixture("MI2S")
+        completed = self.run_compiler(source, *options, "--device", "OUT")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        decoded = self.read_topology()
+        self.assertEqual({k: decoded["m16386"][2][k]
+                          for k in (250, 251, 253, 256, 257)},
+                         {250: 0, 251: 0, 253: 1, 256: 2, 257: 1})
+
+        interface = source["endpoint_queries"]["hardware_tag_data"][0]
+        interface["data"] += record(0x08001019, words(0, 0, 0x00010001),
+                                     target=0x4002).hex()
+        completed = self.run_compiler(source, *options, "--device", "OUT")
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        endpoint = json.loads(self.report.read_text())["factored"]
+        endpoint = endpoint["selections"][0]["endpoints"]["physical"][0]
+        self.assertEqual(endpoint["binding"]["status"],
+                         "ambiguous-native-interface")
+
+        source = hardware_fixture("CODEC_DMA")
+        completed = self.run_compiler(source, *options, "--device", "IN")
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        qualified = ["--device", "IN", "--stream-type", "VOICE",
+                     "--device-pp-type", "MIC"]
+        completed = self.run_compiler(source, *options, *qualified)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        decoded = self.read_topology()
+        self.assertEqual({k: decoded["m16385"][2][k] for k in (250, 251, 253)},
+                         {250: 4, 251: 1, 253: 1})
+        report = json.loads(self.report.read_text())
+        endpoint = report["factored"]["selections"][0]["endpoints"]
+        endpoint = endpoint["physical"][0]
+        self.assertEqual(endpoint["binding"]["dai"], 120)
+        self.assertEqual(endpoint["tag_parameters"][0]["parameters"][0]
+                         ["payload"], words(3, 1, 1).hex())
+        self.assertFalse(report["graphs"][0]["runtime_bindings"])
+        kv.write_text(kv.read_text().replace(
+            'DevicePPType="MIC"',
+            'DevicePPType="MIC" CustomConfig="voice-mic"'))
+        completed = self.run_compiler(source, *options, *qualified)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        completed = self.run_compiler(source, *options, *qualified,
+                                      "--context", "CustomConfig=voice-mic")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        completed = self.run_compiler(source, *options, "--device", "FEEDBACK",
+                                      "--stream-type", "VOICE",
+                                      "--device-pp-type", "MIC",
+                                      "--context", "CustomConfig=voice-mic")
+        self.assertEqual(completed.returncode, 2, completed.stderr)
 
 
 if __name__ == "__main__":

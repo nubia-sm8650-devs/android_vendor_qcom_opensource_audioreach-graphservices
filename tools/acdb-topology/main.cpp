@@ -42,6 +42,7 @@ int main(int argc, char **argv)
         std::set<uint32_t> key_ids;
         std::string exports, input, output, report;
         std::string resources, usecases, dtb;
+        Json::Value context(Json::objectValue), devices(Json::arrayValue);
         uint32_t graph_id = 0;
 
         for (int i = 1; i < argc; i++) {
@@ -52,7 +53,10 @@ int main(int argc, char **argv)
                           << "   --input EXPORT.json | --exports DIRECTORY)\n"
                           << "  [--graph-id ID] [--output TOPOLOGY.conf]\n"
                           << "  [--resource-manager XML --usecase-kv XML\n"
-                          << "   --board-dtb DTB]\n";
+                          << "   --board-dtb DTB]\n"
+                          << "  [--device PAL_DEVICE ... --stream-type TYPE\n"
+                          << "   --device-pp-type TYPE\n"
+                          << "   --context NAME=VALUE ...]\n";
                 return 0;
             }
 
@@ -89,6 +93,21 @@ int main(int argc, char **argv)
                 usecases = value;
             else if (option == "--board-dtb")
                 dtb = value;
+            else if (option == "--device")
+                devices.append(value);
+            else if (option == "--stream-type")
+                context["StreamType"] = value;
+            else if (option == "--device-pp-type")
+                context["DevicePPType"] = value;
+            else if (option == "--context") {
+                size_t separator = value.find('=');
+                if (separator == std::string::npos || !separator ||
+                    separator + 1 == value.size())
+                    throw std::runtime_error("Context requires NAME=VALUE");
+
+                context[value.substr(0, separator)] =
+                    value.substr(separator + 1);
+            }
             else
                 throw std::runtime_error("Unknown option " + option);
         }
@@ -104,10 +123,19 @@ int main(int argc, char **argv)
         if (board_inputs && board_inputs != 3)
             throw std::runtime_error("Supply all three board inputs");
 
+        if (!board_inputs && (!context.empty() || !devices.empty()))
+            throw std::runtime_error("Device context requires board inputs");
+
         Json::Value board;
 
         if (board_inputs)
             board = acdb_topology::read_board(resources, usecases, dtb);
+
+        if (!context.empty())
+            board["context"] = context;
+
+        if (!devices.empty())
+            board["devices"] = devices;
 
         std::vector<Json::Value> graphs;
 
@@ -150,8 +178,11 @@ int main(int argc, char **argv)
         acdb_topology::resolve_connections(result["factored"]);
         acdb_topology::describe_endpoints(result["factored"], board);
 
-        for (const auto &graph : sources) {
-            auto compiled = acdb_topology::compile_graph(graph, graph_id);
+        for (size_t i = 0; i < sources.size(); i++) {
+            const auto &endpoints = result["factored"]["selections"]
+                                          [Json::ArrayIndex(i)]["endpoints"];
+            auto compiled = acdb_topology::compile_graph(sources[i], graph_id,
+                                                          endpoints);
             if (compiled.report["can_emit"].asBool())
                 supported++;
 

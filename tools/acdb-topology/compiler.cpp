@@ -253,7 +253,8 @@ void tuples(std::ostream &out, const std::string &name,
 
 }
 
-Compilation compile_graph(const Source &input, uint32_t graph_id)
+Compilation compile_graph(const Source &input, uint32_t graph_id,
+                          const Json::Value &endpoints)
 {
     const auto &source = input.original;
     if (source["version"] != 1 || !source["subgraph_ids"].isArray() ||
@@ -301,6 +302,18 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
     std::set<uint32_t> containers;
     std::set<uint32_t> used_subgraphs;
 
+    std::map<uint32_t, Tokens> hardware;
+
+    for (const auto &endpoint : endpoints["physical"]) {
+        const auto &binding = endpoint["binding"];
+        if (binding["status"] != "static-bound")
+            continue;
+
+        for (const auto &pair : binding["tokens"])
+            hardware[endpoint["module"].asUInt()].emplace_back(
+                pair[0].asUInt(), pair[1].asUInt());
+    }
+
     auto capacity = [&](uint32_t instance) {
         for (auto [token, value] : graph.ports.at(instance)) {
             if (token == AR_TKN_U32_MODULE_MAX_OP_PORTS)
@@ -322,7 +335,7 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
         containers.insert(module.container);
 
         if (module_widget_type(module.type) == "buffer" &&
-            module.type != 0x0700101a)
+            module.type != 0x0700101a && !hardware.count(module.instance))
             graph.issue("compiler-module-config", module.instance,
                         module.type);
     }
@@ -426,6 +439,8 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
         container.insert(container.end(), ct_properties.begin(),
                          ct_properties.end());
         tokens.insert(tokens.end(), ports.begin(), ports.end());
+        const auto &hw = hardware[module.instance];
+        tokens.insert(tokens.end(), hw.begin(), hw.end());
         unsigned index = 0;
 
         for (const auto &edge : outgoing[module.instance]) {
