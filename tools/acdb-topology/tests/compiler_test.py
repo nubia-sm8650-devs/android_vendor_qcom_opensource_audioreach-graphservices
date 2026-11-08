@@ -23,8 +23,8 @@ def words(*values):
     return struct.pack(f"<{len(values)}I", *values)
 
 
-def record(parameter, payload):
-    return (words(1, parameter, len(payload), 0) + payload
+def record(parameter, payload, target=1):
+    return (words(target, parameter, len(payload), 0) + payload
             + bytes(-len(payload) % 8))
 
 
@@ -168,6 +168,22 @@ def control_fixture():
     return source
 
 
+def voice_fixture(empty=False, multi=False):
+    source = fixture(shared=multi)
+    owners = [(0xB0000001, [(0x0800117B, 0x4001),
+                          (0x08001177, 0x4002)])]
+    if empty:
+        owners = [(0xB0000001, [])]
+    elif multi:
+        owners = [(0xB0000001, [(0x0800117B, 0x4001)]),
+                  (0xB0000002, [(0x08001177, 0x4002)])]
+    for sg, pairs in owners:
+        tags = words(len(pairs)) + b"".join(words(*p) for p in pairs)
+        source["graph_open"] += record(0x08001162, words(1) + properties(
+            sg, [(0x080011B2, tags)]), target=4).hex()
+    return source
+
+
 def widgets(data, kinds=None, blocks=None):
     position = 0
     result = {}
@@ -197,7 +213,7 @@ def widgets(data, kinds=None, blocks=None):
                     groups.append(dict(struct.iter_unpack(
                         "<2I", data[position + 12:position + length])))
                 else:
-                    assert tag == 0x08001061
+                    assert tag in (0x08001061, 0x080011B2)
                     if blocks is not None:
                         blocks.setdefault(name.decode(), []).append(
                             data[position:position + length])
@@ -393,6 +409,34 @@ class CompilerTest(unittest.TestCase):
             self.assertEqual(block, words(12 + len(payload), 0x08001061,
                                            count) + payload)
 
+    def test_voice_tags_retain_subgraph_ownership_and_empty_lists(self):
+        for empty, multi in ((False, False), (True, False), (False, True)):
+            with self.subTest(empty=empty, multi=multi):
+                source = voice_fixture(empty=empty, multi=multi)
+                completed = self.run_compiler(source)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                blocks = {}
+                self.read_topology(blocks=blocks)
+                block, = blocks["m16385"]
+                payload = words(0) if empty else words(1 if multi else 2,
+                    0x0800117B, 0x4001)
+                if not empty and not multi:
+                    payload += words(0x08001177, 0x4002)
+                self.assertEqual(block, words(8 + len(payload), 0x080011B2)
+                                 + payload)
+                if multi:
+                    self.assertEqual(blocks["m16386"], [words(20,
+                        0x080011B2, 1, 0x08001177, 0x4002)])
+
+        source = voice_fixture(multi=True)
+        source["graph_open"] = source["graph_open"].replace(
+            words(0x08001177, 0x4002).hex(), words(0x08001177, 0x4001).hex())
+        completed = self.run_compiler(source)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        report = json.loads(self.report.read_text())["graphs"][0]
+        self.assertIn("voice-module-reference",
+                      {i["kind"] for i in report["issues"]})
+
     def test_shared_container_is_not_split_or_renumbered(self):
         source = fixture(shared=True)
         completed = self.run_compiler(source)
@@ -415,7 +459,7 @@ class CompilerTest(unittest.TestCase):
         control += words(0x0800136F, 4, 2)
         first["graph_connections"] = record(
             0x08001061, words(1) + control[:-4] + words(1)).hex()
-        opaque = words(4, 0x08001162, 3, 0) + b"xyz" + b"abcde"
+        opaque = words(4, 0x0800FFFF, 3, 0) + b"xyz" + b"abcde"
         second["graph_open"] += opaque.hex()
         second["graph_connections"] = (
             record(0x08001004, words(2, 0x4001, 1, 0x4002, 2,

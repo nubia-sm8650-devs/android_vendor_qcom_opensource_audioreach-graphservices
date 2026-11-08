@@ -22,6 +22,7 @@ struct Graph {
     std::vector<Module> modules;
     std::vector<std::array<uint32_t, 4>> edges;
     std::vector<Connection> control_links;
+    std::map<uint32_t, Bytes> voice_tags;
     Json::Value issues{Json::arrayValue};
 
     void issue(const std::string &kind, uint32_t object, uint32_t detail)
@@ -114,11 +115,56 @@ struct Graph {
         }
     }
 
+    void voice_config(Reader &reader)
+    {
+        for (const auto &sg : read_declarations(reader)) {
+            bool found = false;
+
+            for (const auto &property : sg.properties) {
+                if (property.id != 0x080011b2) {
+                    issue("voice-property", sg.id, property.id);
+                    continue;
+                }
+
+                if (found)
+                    throw std::runtime_error("Repeated voice tag property");
+
+                found = true;
+                Reader tags{property.payload};
+                uint32_t count = tags.count(8);
+                std::set<uint32_t> ids;
+
+                for (uint32_t i = 0; i < count; i++) {
+                    uint32_t tag = tags.word(), module = tags.word();
+                    if (!tag || !module || !ids.insert(tag).second)
+                        throw std::runtime_error("Invalid voice tag identity");
+                }
+
+                tags.finish();
+
+                auto [previous, inserted] = voice_tags.emplace(sg.id,
+                                                              property.payload);
+                if (!inserted && previous->second != property.payload)
+                    throw std::runtime_error(
+                        "Conflicting voice tag declaration");
+            }
+
+            if (!found)
+                issue("missing-voice-tags", sg.id, 0x08001162);
+        }
+    }
+
     void records(const std::vector<Parameter> &parameters)
     {
         for (const auto &parameter : parameters) {
             uint32_t target = parameter.target, family = parameter.id;
             Reader data{parameter.payload};
+
+            if (target == 4 && family == 0x08001162) {
+                voice_config(data);
+                data.finish();
+                continue;
+            }
 
             if (target != 1) {
                 issue("parameter-target", target, family);
@@ -283,6 +329,23 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
     std::map<uint32_t, std::vector<std::array<uint32_t, 4>>> outgoing;
     std::map<uint32_t, std::vector<Connection>> controls;
 
+    for (const auto &[sg, payload] : graph.voice_tags) {
+        if (!graph.subgraphs.count(sg))
+            graph.issue("voice-subgraph", sg, 0x08001162);
+
+        Reader tags{payload};
+        uint32_t count = tags.word();
+
+        for (uint32_t i = 0; i < count; i++) {
+            tags.word();
+
+            uint32_t instance = tags.word();
+            if (!modules.count(instance) ||
+                modules.at(instance)->subgraph != sg)
+                graph.issue("voice-module-reference", sg, instance);
+        }
+    }
+
     for (const auto &link : graph.control_links) {
         const auto &peers = link.peers;
         if (!modules.count(peers[0]) || !modules.count(peers[2]))
@@ -326,6 +389,7 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
     result.report["modules"] = Json::UInt64(graph.modules.size());
     result.report["data_links"] = Json::UInt64(graph.edges.size());
     result.report["control_links"] = Json::UInt64(graph.control_links.size());
+    result.report["voice_subgraphs"] = Json::UInt64(graph.voice_tags.size());
     result.report["can_emit"] = graph.issues.empty();
     result.report["runtime_bindings"] = false;
 
@@ -334,6 +398,7 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
 
     std::ostringstream body;
     std::set<uint32_t> used_tokens;
+    std::set<uint32_t> emitted_voice;
 
     auto emit = [&](const std::string &name, const Tokens &tokens) {
         for (auto [token, value] : tokens) {
@@ -396,6 +461,14 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
             std::string control = name + "_control";
             control_data(body, control, controls[module.instance]);
             links.push_back(control);
+        }
+
+        if (graph.voice_tags.count(module.subgraph) &&
+            emitted_voice.insert(module.subgraph).second) {
+            std::string voice = name + "_voice";
+            private_data(body, voice, SND_SOC_AR_TPLG_VOICE_TAG_TYPE,
+                         graph.voice_tags.at(module.subgraph));
+            links.push_back(voice);
         }
 
         body << "SectionWidget.\"" << name << "\" {\n    type \""
