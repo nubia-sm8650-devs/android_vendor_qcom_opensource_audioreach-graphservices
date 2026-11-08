@@ -44,6 +44,7 @@ int main(int argc, char **argv)
         std::string resources, usecases, dtb;
         Json::Value context(Json::objectValue), devices(Json::arrayValue);
         uint32_t graph_id = 0;
+        bool corpus = false;
 
         for (int i = 1; i < argc; i++) {
             std::string option = argv[i];
@@ -52,12 +53,18 @@ int main(int argc, char **argv)
                           << "  (--acdb FILE ... --key ID=VALUE ... |\n"
                           << "   --input EXPORT.json | --exports DIRECTORY)\n"
                           << "  [--graph-id ID] [--output TOPOLOGY.conf]\n"
+                          << "  [--corpus]\n"
                           << "  [--resource-manager XML --usecase-kv XML\n"
                           << "   --board-dtb DTB]\n"
                           << "  [--device PAL_DEVICE ... --stream-type TYPE\n"
                           << "   --device-pp-type TYPE\n"
                           << "   --context NAME=VALUE ...]\n";
                 return 0;
+            }
+
+            if (option == "--corpus") {
+                corpus = true;
+                continue;
             }
 
             if (++i == argc)
@@ -115,7 +122,7 @@ int main(int argc, char **argv)
         if (report.empty() || int(!databases.empty()) + int(!exports.empty()) +
             int(!input.empty()) != 1 ||
             (databases.empty() != keys.empty()) ||
-            (!exports.empty() && !output.empty()))
+            (!exports.empty() && !output.empty() && !corpus))
             throw std::runtime_error("Invalid options; use --help");
 
         int board_inputs = int(!resources.empty()) + int(!usecases.empty()) +
@@ -200,11 +207,21 @@ int main(int argc, char **argv)
         result["selections"] = Json::UInt64(graphs.size());
         result["board"] = board;
 
+        bool can_emit = supported == graphs.size();
+
+        if (corpus) {
+            auto compiled = acdb_topology::compile_corpus(
+                sources, result["factored"], graph_id);
+            result["corpus"] = compiled.report;
+            can_emit = compiled.report["can_emit"].asBool();
+            topology = compiled.topology.render();
+        }
+
         Json::StreamWriterBuilder writer;
         writer["indentation"] = "  ";
         write(report, Json::writeString(writer, result) + "\n");
 
-        if (supported != graphs.size()) {
+        if (!can_emit) {
             std::cerr << "Unsupported graph declarations; see " << report
                       << ". No topology was written.\n";
             return 2;

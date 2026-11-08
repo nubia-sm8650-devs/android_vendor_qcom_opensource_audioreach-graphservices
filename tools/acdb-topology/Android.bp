@@ -4,6 +4,7 @@ cc_binary_host {
         "main.cpp",
         "native.cpp",
         "compiler.cpp",
+        "corpus.cpp",
         "topology.cpp",
         "source.cpp",
         "factoring.cpp",

@@ -231,6 +231,26 @@ def hardware_fixture(family):
     return source
 
 
+def corpus_fixtures():
+    together = fixture(shared=True)
+    left = fixture(source_only=True)
+    right = fixture(source_only=True)
+    link = record(0x08001004, words(1, 0x4001, 1, 0x4002, 2))
+    graph = bytes.fromhex(right["graph_open"]).replace(link, b"")
+    graph = graph.replace(words(0x4001), words(0x4002))
+    graph = graph.replace(words(0x07001005), words(0x07001004))
+    graph = graph.replace(words(0xB0000001), words(0xB0000002))
+    right["graph_open"] = (graph + link).hex()
+    right["subgraph_ids"] = ["0xb0000002"]
+    right["subgraph_connections"] = words(0xB0000002, 0).hex()
+    control = record(0x08001061, words(1, 0x4002, 7, 0x4001, 8, 2,
+        0x08001062, 8, 1, 0x0800105D, 0x0800136F, 4, 0))
+    for source in (together, left, right):
+        source["graph_open"] += control.hex()
+    left["graph_connections"] = link.hex()
+    return [together, left, right]
+
+
 def widgets(data, kinds=None, blocks=None):
     position = 0
     result = {}
@@ -302,7 +322,7 @@ class CompilerTest(unittest.TestCase):
             *options],
             capture_output=True, text=True)
 
-    def run_exports(self, sources):
+    def run_exports(self, sources, *options):
         directory = Path(tempfile.mkdtemp(dir=self.root))
 
         for index, source in enumerate(sources):
@@ -310,7 +330,57 @@ class CompilerTest(unittest.TestCase):
 
         return subprocess.run([
             str(COMPILER), "--exports", str(directory), "--report",
-            str(self.report)], capture_output=True, text=True)
+            str(self.report), *options], capture_output=True, text=True)
+
+    def test_corpus_keeps_graph_selection_separate_from_references(self):
+        sources = corpus_fixtures()
+        completed = self.run_exports(sources, "--corpus", "--graph-id", "16",
+                                      "--output", str(self.output))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(self.report.read_text())
+        self.assertEqual(reconstruct(report["factored"]), sources)
+        corpus = report["corpus"]
+        self.assertTrue(corpus["can_emit"])
+        self.assertFalse(corpus["runtime_bindings"])
+        self.assertEqual([s["graphs"] for s in corpus["selections"]],
+                         [[16, 17], [16], [17]])
+        self.assertEqual([len(s["references"]) for s in corpus["selections"]],
+                         [2, 3, 2])
+        self.assertEqual(len(corpus["references"]), 3)
+        decoded = self.read_topology()
+        self.assertEqual(set(decoded), {"m16385", "m16386"})
+        self.assertEqual([decoded[m][0][2] for m in sorted(decoded)],
+                         [0xB0000001, 0xB0000002])
+        self.assertEqual([decoded[m][0][1] for m in sorted(decoded)], [16, 17])
+        self.assertTrue(all(209 not in v[2] for v in decoded.values()))
+        self.assertEqual(self.output.read_text().count("SectionControlMixer"),
+                         3)
+
+        changed = corpus_fixtures()
+        changed[1]["graph_open"] = changed[1]["graph_open"].replace(
+            words(0x07001005).hex(), words(0x07001002).hex())
+        self.output.write_text("retain")
+        completed = self.run_exports(changed, "--corpus", "--output",
+                                      str(self.output))
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(self.output.read_text(), "retain")
+        problems = json.loads(self.report.read_text())["corpus"]["issues"]
+        self.assertIn("compiler-corpus-module-owner",
+                      {p["kind"] for p in problems})
+
+        changed = fixture()
+        changed["graph_open"] = changed["graph_open"].replace(
+            words(0x4001, 1, 0x4002, 2).hex(),
+            words(0x4001, 3, 0x4002, 2).hex())
+        completed = self.run_exports([fixture(), changed], "--corpus",
+                                      "--output", str(self.output))
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        problems = json.loads(self.report.read_text())["corpus"]["issues"]
+        self.assertIn("compiler-corpus-subgraph-variant",
+                      {p["kind"] for p in problems})
+        subgraph = json.loads(self.report.read_text())["corpus"]["subgraphs"][0]
+        self.assertFalse(subgraph["can_emit"])
+        self.assertEqual(self.output.read_text(), "retain")
 
     def read_topology(self, kinds=None, blocks=None):
         if not shutil.which("alsatplg"):
