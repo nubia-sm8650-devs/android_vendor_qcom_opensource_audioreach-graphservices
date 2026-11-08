@@ -193,9 +193,11 @@ def logger_fixture():
 
 def hardware_fixture(family):
     source = fixture()
-    playback = family == "MI2S"
+    usb = family.startswith("USB")
+    playback = family in ("MI2S", "USB_PLAYBACK")
     iid = 0x4002 if playback else 0x4001
-    mid = (0x0700100A if playback else
+    mid = ((0x0700104F if playback else 0x07001050) if usb else
+           0x0700100A if playback else
            0x0700102A if family == "SLIM" else 0x07001024)
     old = 0x07001004 if playback else 0x07001005
     graph = bytes.fromhex(source["graph_open"])
@@ -216,6 +218,9 @@ def hardware_fixture(family):
                              ["0xad000000", "0xad000001"]])
     if family == "SLIM":
         source["graph_keys"] = [["0xa3000000", "0xa3000009"]]
+    if usb:
+        source["graph_keys"] = ([["0xa2000000", "0xa2000009"]] if playback
+                                else [["0xa3000000", "0xa300000a"]])
     tag = 0xC0000004 if playback else 0xC0000005
     interface = (record(0x08001019, words(0, 0, 0x00010002), target=iid)
                  if playback else record(0x08001063, words(3, 1, 1),
@@ -223,6 +228,8 @@ def hardware_fixture(family):
     defaults = record(0x08001017, words(48000, 0x00020010, 1), target=iid)
     if family == "SLIM":
         interface = record(0x08001068, words(0, 0x2221, 0), target=iid)
+        defaults = record(0x08001018, words(1), target=iid)
+    if usb:
         defaults = record(0x08001018, words(1), target=iid)
     source["endpoint_queries"] = {
         "tags": {"present": True, "count": 1,
@@ -234,6 +241,10 @@ def hardware_fixture(family):
         "empty_ckv_defaults": {"present": True, "modules": [iid],
             "data": defaults.hex()},
     }
+    if usb:
+        source["endpoint_queries"]["tag_keys"] = {
+            "present": True, "count": 0, "data": ""}
+        source["endpoint_queries"]["hardware_tag_data"] = []
     return source
 
 
@@ -748,6 +759,14 @@ class CompilerTest(unittest.TestCase):
                         link-name = "BT Capture";
                         cpu { sound-dai = <&backend 15>; };
                     };
+                    usb_rx {
+                        link-name = "USB Playback";
+                        cpu { sound-dai = <&backend 136>; };
+                    };
+                    usb_tx {
+                        link-name = "USB Capture";
+                        cpu { sound-dai = <&backend 153>; };
+                    };
                     disabled {
                         status = "disabled";
                         link-name = "Unused Playback";
@@ -775,11 +794,20 @@ class CompilerTest(unittest.TestCase):
             <in-device><id>BTIN</id>
                 <back_end_name>SLIM-DEV2-TX-7</back_end_name>
             </in-device>
+            <in-device><id>USBIN</id>
+                <back_end_name>USB_AUDIO-TX</back_end_name>
+            </in-device>
+            <out-device><id>USBOUT</id>
+                <back_end_name>USB_AUDIO-RX</back_end_name>
+            </out-device>
             </device_profile></resource_manager_info>''')
         kv = self.root / "usecases.xml"
         kv.write_text('''<graph_key_value_pair_info>
             <devices><device id="OUT"><keys_and_values>
                 <graph_kv key="0xA2000000" value="0xA2000001"/>
+            </keys_and_values></device>
+            <device id="USBOUT"><keys_and_values>
+                <graph_kv key="0xA2000000" value="0xA2000009"/>
             </keys_and_values></device></devices>
             <devicepps><devicepp id="IN, FEEDBACK, ABSENT">
                 <keys_and_values StreamType="VOICE,SENSOR" DevicePPType="MIC">
@@ -788,6 +816,8 @@ class CompilerTest(unittest.TestCase):
                 </keys_and_values>
             </devicepp><devicepp id="BTIN"><keys_and_values>
                 <graph_kv key="0xA3000000" value="0xA3000009"/>
+            </keys_and_values></devicepp><devicepp id="USBIN"><keys_and_values>
+                <graph_kv key="0xA3000000" value="0xA300000A"/>
             </keys_and_values></devicepp></devicepps>
             </graph_key_value_pair_info>''')
         source = fixture()
@@ -804,8 +834,8 @@ class CompilerTest(unittest.TestCase):
         check_endpoints(result["factored"], [source])
         board = result["board"]
         self.assertEqual([link["dai"] for link in board["links"]],
-                         [16, 120, 15])
-        self.assertEqual(board["assignments"][1]["conditions"], {
+                         [16, 120, 15, 136, 153])
+        self.assertEqual(board["assignments"][2]["conditions"], {
             "StreamType": "VOICE,SENSOR", "DevicePPType": "MIC"})
         self.assertIn("<samplerate>16000</samplerate>",
                       board["profiles"][0]["xml"])
@@ -856,6 +886,25 @@ class CompilerTest(unittest.TestCase):
         dts.write_text(original_dts)
         subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-o", str(dtb),
                         str(dts)], check=True, capture_output=True)
+
+        for family, device, iid, dai in (("USB", "USBIN", "m16385", 153),
+                                         ("USB_PLAYBACK", "USBOUT",
+                                          "m16386", 136)):
+            source = hardware_fixture(family)
+            completed = self.run_compiler(source, *options, "--device", device)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            decoded = self.read_topology()
+            self.assertTrue({250, 251, 253}.isdisjoint(decoded[iid][2]))
+            endpoint = json.loads(self.report.read_text())["factored"]
+            endpoint = endpoint["selections"][0]["endpoints"]["physical"][0]
+            self.assertEqual(endpoint["binding"]["status"], "dai-configured")
+            self.assertEqual(endpoint["binding"]["dai"], dai)
+            self.assertTrue(endpoint["binding"]["required_runtime_format"])
+            self.assertTrue(endpoint["binding"]["required_runtime_usb_token"])
+
+        completed = self.run_compiler(hardware_fixture("USB"), *options,
+                                      "--device", "USBOUT")
+        self.assertEqual(completed.returncode, 2, completed.stderr)
 
         source = hardware_fixture("MI2S")
         completed = self.run_compiler(source, *options, "--device", "OUT")

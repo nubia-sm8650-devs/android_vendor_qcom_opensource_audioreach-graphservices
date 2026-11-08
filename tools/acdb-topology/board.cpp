@@ -114,6 +114,15 @@ Json::Value transport(const char *family, const char *direction,
 Json::Value backend_transport(const std::string &backend)
 {
     auto parts = split(backend, '-');
+    if (parts.size() == 2 && parts[0] == "USB_AUDIO" &&
+        (parts[1] == "RX" || parts[1] == "TX")) {
+        Json::Value result;
+        result["family"] = "USB_AUDIO";
+        result["direction"] = parts[1] == "RX" ? "playback" : "capture";
+
+        return result;
+    }
+
     if (parts.size() != 4 || (parts[2] != "RX" && parts[2] != "TX"))
         return {};
 
@@ -163,6 +172,14 @@ Json::Value backend_transport(const std::string &backend)
 
 Json::Value dai_transport(uint32_t id)
 {
+    if (id == 136 || id == 153) {
+        Json::Value result;
+        result["family"] = "USB_AUDIO";
+        result["direction"] = id == 136 ? "playback" : "capture";
+
+        return result;
+    }
+
     if (id >= 2 && id <= 15) {
         Json::Value result;
         result["family"] = "SLIM";

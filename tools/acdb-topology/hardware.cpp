@@ -33,7 +33,8 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
     result["status"] = "unsupported-interface";
 
     std::string family = endpoint["family"].asString();
-    if (family != "MI2S" && family != "CODEC_DMA" && family != "SLIM")
+    if (family != "MI2S" && family != "CODEC_DMA" && family != "SLIM" &&
+        family != "USB_AUDIO")
         return result;
 
     std::set<std::array<uint32_t, 3>> ports;
@@ -78,7 +79,9 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         for (const auto &index : candidate["links"]) {
             const auto &link = board["links"][index.asUInt()];
             const auto &transport = link["transport"];
-            if (family == "SLIM")
+            if (family == "USB_AUDIO")
+                ports.insert({0, 0, link["dai"].asUInt()});
+            else if (family == "SLIM")
                 ports.insert({0, profile["transport"]["device"].asUInt(),
                               link["dai"].asUInt()});
             else
@@ -112,7 +115,8 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
     result["status"] = formats.empty() ? "missing-native-format" :
                                          "ambiguous-native-format";
 
-    bool live_format = family == "SLIM" && formats.empty();
+    bool live_format = (family == "SLIM" || family == "USB_AUDIO") &&
+                       formats.empty();
     if (!live_format && formats.size() != 1)
         return result;
 
@@ -124,10 +128,12 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         tokens.append(pair);
     };
     const auto &port = *ports.begin();
-    if (family != "SLIM")
+    if (family == "MI2S" || family == "CODEC_DMA")
         token(AR_TKN_U32_MODULE_HW_IF_TYPE, port[0]);
 
-    token(AR_TKN_U32_MODULE_HW_IF_IDX, port[1]);
+    if (family != "USB_AUDIO")
+        token(AR_TKN_U32_MODULE_HW_IF_IDX, port[1]);
+
     if (!live_format)
         token(AR_TKN_U32_MODULE_FMT_DATA, *formats.begin());
 
@@ -161,6 +167,9 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
     result["status"] = live_format ? "dai-configured" : "static-bound";
     if (live_format)
         result["required_runtime_format"] = true;
+
+    if (family == "USB_AUDIO")
+        result["required_runtime_usb_token"] = true;
 
     result["dai"] = port[2];
     result["tokens"] = tokens;

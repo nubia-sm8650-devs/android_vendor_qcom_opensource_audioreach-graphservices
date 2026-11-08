@@ -257,6 +257,8 @@ Compilation compile_graph(const Source &input, uint32_t graph_id,
             binding["status"] != "dai-configured")
             continue;
 
+        hardware.emplace(endpoint["module"].asUInt(), Tokens{});
+
         for (const auto &pair : binding["tokens"])
             hardware[endpoint["module"].asUInt()].emplace_back(
                 pair[0].asUInt(), pair[1].asUInt());
