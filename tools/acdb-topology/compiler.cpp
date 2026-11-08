@@ -40,12 +40,16 @@ struct Graph {
             {0x0800100e, AR_TKN_U32_SUB_GRAPH_PERF_MODE},
             {0x0800100f, AR_TKN_U32_SUB_GRAPH_DIRECTION},
             {0x08001010, AR_TKN_U32_SUB_GRAPH_SCENARIO_ID},
+            {0x080010cc, AR_TKN_U32_SUB_GRAPH_VSID},
         };
         const std::map<uint32_t, uint32_t> container_tokens = {
             {0x08001011, AR_TKN_U32_CONTAINER_CAPABILITY_ID},
             {0x08001012, AR_TKN_U32_CONTAINER_GRAPH_POS},
             {0x08001013, AR_TKN_U32_CONTAINER_STACK_SIZE},
             {0x08001014, AR_TKN_U32_CONTAINER_PROC_DOMAIN},
+            {0x080010cb, AR_TKN_U32_CONTAINER_PARENT_ID},
+            {0x08001174, AR_TKN_U32_CONTAINER_HEAP_ID},
+            {0x0800124d, AR_TKN_U32_CONTAINER_PEER_HEAP_ID},
         };
         auto &objects = family == 0x08001001 ? subgraphs :
                         family == 0x08001000 ? containers : ports;
@@ -94,11 +98,18 @@ struct Graph {
 
             objects.emplace(id, tokens);
 
-            size_t required = family == 0x08001001 ? 3 :
-                              family == 0x08001000 ? 4 : 2;
+            const std::vector<uint32_t> required = family == 0x08001001 ?
+                std::vector<uint32_t>{0x0800100e, 0x0800100f, 0x08001010} :
+                family == 0x08001000 ? std::vector<uint32_t>{
+                    0x08001011, 0x08001012, 0x08001013, 0x08001014} :
+                std::vector<uint32_t>{0x08001015};
 
-            if (tokens.size() != required)
-                issue("missing-properties", id, family);
+            for (uint32_t property : required) {
+                if (!seen.count(property)) {
+                    issue("missing-properties", id, family);
+                    break;
+                }
+            }
         }
     }
 

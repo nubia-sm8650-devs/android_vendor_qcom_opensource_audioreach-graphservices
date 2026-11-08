@@ -35,7 +35,8 @@ def properties(identity, values):
     return result
 
 
-def fixture(shared=False, extra=False, source_only=False):
+def fixture(shared=False, extra=False, source_only=False,
+            container_properties=(), vsid=None):
     sg_ids = ([0xB0000001, 0xB0000002] if shared and not source_only
               else [0xB0000001])
     sg_data = b""
@@ -43,13 +44,15 @@ def fixture(shared=False, extra=False, source_only=False):
         props = [(0x0800100E, words(1)), (0x0800100F, words(2)),
                  (0x08001010, words(1))]
         if extra:
-            props.append((0x080010CC, words(0xFFFFFFFF)))
+            props.append((0x08009999, words(0xFFFFFFFF)))
+        if vsid is not None:
+            props.append((0x080010CC, words(vsid)))
         sg_data += properties(sg, props)
 
     container = properties(0xE0000001, [
         (0x08001011, words(1, 0x0B000001)),
         (0x08001012, words(1)), (0x08001013, words(4096)),
-        (0x08001014, words(2))])
+        (0x08001014, words(2)), *container_properties])
     if source_only:
         modules = (words(1, sg_ids[0], 0xE0000001, 1)
                    + words(0x07001005, 0x4001))
@@ -211,6 +214,31 @@ class CompilerTest(unittest.TestCase):
         self.assertEqual(report["source"], source)
         self.assertIn("property", {i["kind"] for i in report["issues"]})
         self.assertEqual(self.output.read_text(), "previous output")
+
+    def test_optional_open_properties_preserve_presence_and_values(self):
+        optional = [(0x080010CB, words(0)),
+                    (0x08001174, words(0xFFFFFFFF)),
+                    (0x0800124D, words(1))]
+        for values, vsid in ((optional, 0), (optional[1:], 0xFFFFFFFF)):
+            with self.subTest(vsid=vsid):
+                source = fixture(container_properties=values, vsid=vsid)
+                completed = self.run_compiler(source)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                decoded = self.read_topology()
+                sg, container, _ = decoded["m16385"]
+                self.assertEqual(sg[6], vsid)
+                expected = {106: 0xFFFFFFFF, 107: 1}
+                if len(values) == 3:
+                    expected[105] = 0
+                self.assertEqual({k: v for k, v in container.items()
+                                  if k in (105, 106, 107)}, expected)
+
+        source["graph_open"] = source["graph_open"].replace(
+            words(0x08001014).hex(), words(0x08009998).hex())
+        completed = self.run_compiler(source)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        issues = json.loads(self.report.read_text())["graphs"][0]["issues"]
+        self.assertIn("missing-properties", {i["kind"] for i in issues})
 
     def test_generic_widgets_preserve_wide_port_capacities(self):
         source = generic_fixture()
