@@ -27,7 +27,7 @@ struct Graph {
     {
         Json::Value value;
         value["kind"] = kind;
-        value["scope"] = kind == "compiler-widget" ?
+        value["scope"] = kind.compare(0, 9, "compiler-") == 0 ?
                          "compiler-coverage" : "kernel-contract";
         value["object"] = object;
         value["detail"] = detail;
@@ -224,12 +224,9 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
         if (!inserted && owner->second != module.subgraph)
             graph.issue("shared-container", module.container, module.subgraph);
 
-        if (module_widget_type(module.type).empty())
-            graph.issue("compiler-widget", module.instance, module.type);
-
-        if (capacity(module.instance) > 8)
-            graph.issue("port-capacity-loop", module.instance,
-                        capacity(module.instance));
+        if (module_widget_type(module.type) == "buffer")
+            graph.issue("compiler-module-config", module.instance,
+                        module.type);
     }
 
     std::map<uint32_t, std::vector<std::array<uint32_t, 4>>> outgoing;
@@ -245,9 +242,14 @@ Compilation compile_graph(const Source &input, uint32_t graph_id)
     }
 
     for (const auto &[instance, edges] : outgoing) {
-        auto module = modules.find(instance);
-        if (edges.size() > 8 || (module != modules.end() && edges.size() >
-            capacity(instance)))
+        std::set<uint32_t> ports;
+        for (const auto &edge : edges)
+            ports.insert(edge[1]);
+
+        if (modules.count(instance) && ports.size() > capacity(instance))
+            graph.issue("port-capacity", instance, ports.size());
+
+        if (edges.size() > 8)
             graph.issue("connection-slots", instance, edges.size());
     }
 

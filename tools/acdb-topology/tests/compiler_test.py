@@ -79,7 +79,28 @@ def fixture(shared=False, extra=False, source_only=False):
             "graph_connections": ""}
 
 
-def widgets(data):
+def generic_fixture():
+    source = fixture()
+    graph = bytes.fromhex(source["graph_open"])
+    graph = graph.replace(words(0x07001005), words(0x07001011))
+    graph = graph.replace(words(0x07001004), words(0x07001002))
+    graph = graph.replace(properties(0x4001, [(0x08001015, words(1, 1))]),
+                          properties(0x4001, [(0x08001015, words(1, 18))]))
+    graph = graph.replace(words(0x4001, 1, 0x4002, 2),
+                          words(0x4001, 23, 0x4002, 2))
+    source["graph_open"] = graph.hex()
+    return source
+
+
+def host_fixture(module):
+    source = fixture()
+    previous = 0x07001005 if module in (0x07001000, 0x07001006) else 0x07001004
+    source["graph_open"] = bytes.fromhex(source["graph_open"]).replace(
+        words(previous), words(module)).hex()
+    return source
+
+
+def widgets(data, kinds=None):
     position = 0
     result = {}
     while position < len(data):
@@ -92,7 +113,8 @@ def widgets(data):
             position = end
             continue
         for _ in range(count):
-            widget_size, = struct.unpack_from("<I", data, position)
+            widget_size, widget_type = struct.unpack_from("<2I", data,
+                                                          position)
             name = data[position + 8:position + 52].split(b"\0")[0]
             private_size, = struct.unpack_from("<I", data,
                                                position + widget_size - 4)
@@ -108,6 +130,8 @@ def widgets(data):
                 position += length
             assert position == private_end
             result[name.decode()] = groups
+            if kinds is not None:
+                kinds[name.decode()] = widget_type
         assert position == end
     return result
 
@@ -151,18 +175,21 @@ class CompilerTest(unittest.TestCase):
             str(COMPILER), "--exports", str(directory), "--report",
             str(self.report)], capture_output=True, text=True)
 
+    def read_topology(self, kinds=None):
+        if not shutil.which("alsatplg"):
+            self.skipTest("alsatplg is not installed")
+        binary = self.root / "topology.bin"
+        subprocess.run(["alsatplg", "-c", str(self.output), "-o", str(binary)],
+                       check=True, capture_output=True)
+        return widgets(binary.read_bytes(), kinds)
+
     def test_conventional_topology_preserves_declarations(self):
         source = fixture()
         completed = self.run_compiler(source)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(self.report.read_text())["graphs"][0]
                          ["source"], source)
-        if not shutil.which("alsatplg"):
-            self.skipTest("alsatplg is not installed")
-        binary = self.root / "topology.bin"
-        subprocess.run(["alsatplg", "-c", str(self.output), "-o", str(binary)],
-                       check=True, capture_output=True)
-        decoded = widgets(binary.read_bytes())
+        decoded = self.read_topology()
         self.assertEqual(set(decoded), {"m16385", "m16386"})
         for iid in (0x4001, 0x4002):
             sg, container, module = decoded[f"m{iid}"]
@@ -184,6 +211,55 @@ class CompilerTest(unittest.TestCase):
         self.assertEqual(report["source"], source)
         self.assertIn("property", {i["kind"] for i in report["issues"]})
         self.assertEqual(self.output.read_text(), "previous output")
+
+    def test_generic_widgets_preserve_wide_port_capacities(self):
+        source = generic_fixture()
+        completed = self.run_compiler(source)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(self.report.read_text())["graphs"][0]
+        self.assertEqual(report["source"], source)
+        self.assertFalse(report["runtime_bindings"])
+        kinds = {}
+        decoded = self.read_topology(kinds)
+        self.assertEqual(kinds, {"m16385": 18, "m16386": 18})
+        self.assertEqual(decoded["m16385"][2][203], 18)
+        self.assertEqual(decoded["m16385"][2][206], 23)
+        self.assertEqual(decoded["m16386"][2][200], 0x07001002)
+
+    def test_shared_memory_widgets_preserve_endpoint_direction(self):
+        for module in (0x07001000, 0x07001001, 0x07001006, 0x07001007):
+            with self.subTest(module=hex(module)):
+                source = host_fixture(module)
+                completed = self.run_compiler(source)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                kinds = {}
+                decoded = self.read_topology(kinds)
+                if module in (0x07001000, 0x07001006):
+                    self.assertEqual(kinds, {"m16385": 11, "m16386": 22})
+                    self.assertEqual(decoded["m16385"][2][200], module)
+                else:
+                    self.assertEqual(kinds, {"m16385": 23, "m16386": 12})
+                    self.assertEqual(decoded["m16386"][2][200], module)
+
+    def test_fanout_does_not_consume_additional_output_ports(self):
+        source = fixture()
+        append_modules(source, [(0x07001002, 0x5001)])
+        source["graph_connections"] = record(
+            0x08001004, words(1, 0x4001, 1, 0x5001, 2)).hex()
+        completed = self.run_compiler(source)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        decoded = self.read_topology()
+        module = decoded["m16385"][2]
+        self.assertEqual(module[203], 1)
+        self.assertEqual((module[206], module[210]), (1, 1))
+        self.assertEqual((module[209], module[212]), (0x4002, 0x5001))
+
+        source["graph_connections"] = record(
+            0x08001004, words(1, 0x4001, 3, 0x5001, 2)).hex()
+        completed = self.run_compiler(source)
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        report = json.loads(self.report.read_text())["graphs"][0]
+        self.assertIn("port-capacity", {i["kind"] for i in report["issues"]})
 
     def test_shared_container_is_not_split_or_renumbered(self):
         source = fixture(shared=True)
@@ -312,6 +388,12 @@ class CompilerTest(unittest.TestCase):
         result = json.loads(self.report.read_text())
         factored = result["factored"]
         self.assertEqual(reconstruct(factored), sources)
+        issues = result["graphs"][1]["issues"]
+        self.assertEqual({issue["object"] for issue in issues},
+                         {0x5003, 0x5004})
+        self.assertTrue(all(issue["kind"] == "compiler-module-config" and
+                            issue["scope"] == "compiler-coverage"
+                            for issue in issues))
         check_endpoints(factored, sources)
         self.assertEqual(factored["selections"][0]["endpoints"]["host"]
                          ["playback"]["resolution"], "none")

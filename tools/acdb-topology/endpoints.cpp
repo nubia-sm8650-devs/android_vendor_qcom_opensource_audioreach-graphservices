@@ -184,11 +184,23 @@ Json::Value board_candidates(const Json::Value &metadata,
 
 std::string module_widget_type(uint32_t module)
 {
+    auto host = hosts.find(module);
+    if (host != hosts.end())
+        return std::string(host->second.direction) == "playback" ?
+               "aif_in" : "aif_out";
+
+    if (physical.count(module))
+        return "buffer";
+
     switch (module) {
     case 0x07001003: return "src";
     case 0x07001004: return "encoder";
-    case 0x07001005: return "decoder";
-    default: return {};
+    case 0x07001005:
+    case 0x0700103b: return "decoder";
+    case 0x0700101a:
+    case 0x0700117c:
+    case 0x0700117d: return "buffer";
+    default: return "effect";
     }
 }
 
