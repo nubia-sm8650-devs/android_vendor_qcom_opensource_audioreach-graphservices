@@ -146,6 +146,10 @@ int main(int argc, char **argv)
         size_t supported = 0;
         std::string topology;
 
+        result["factored"] = acdb_topology::factor_sources(sources);
+        acdb_topology::resolve_connections(result["factored"]);
+        acdb_topology::describe_endpoints(result["factored"], board);
+
         for (const auto &graph : sources) {
             auto compiled = acdb_topology::compile_graph(graph, graph_id);
             if (compiled.report["can_emit"].asBool())
@@ -163,9 +167,6 @@ int main(int argc, char **argv)
         result["issues"] = counts;
         result["can_emit"] = Json::UInt64(supported);
         result["selections"] = Json::UInt64(graphs.size());
-        result["factored"] = acdb_topology::factor_sources(sources);
-        acdb_topology::resolve_connections(result["factored"]);
-        acdb_topology::describe_endpoints(result["factored"], board);
         result["board"] = board;
 
         Json::StreamWriterBuilder writer;
