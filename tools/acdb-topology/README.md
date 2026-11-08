@@ -32,6 +32,25 @@ subgraph or graph identity. The DAI identity is recorded in the endpoint's
 Static bindings do not set `runtime_bindings`. Rates, channel maps and
 clock ownership still come from the hardware DAI path, and calibration
 remains in userspace. MI2S word-select source follows the live DAI format.
-Unsupported interfaces, ambiguous bindings and unresolved cross-subgraph
-references still block topology output. `--exports` reports each selection
-individually; it does not produce a combined runtime topology.
+Unsupported interfaces, ambiguous bindings and unresolved references still
+block topology output.
+
+## Corpus declarations
+
+Use `--exports DIRECTORY --corpus --output topology.conf` to lower a corpus
+into one topology. `--graph-id` supplies the first graph ID. Each invariant
+native subgraph gets its own graph ID; native subgraph, container and module
+identities are retained. Conflicting subgraph or hardware definitions block
+output rather than selecting a default variant.
+
+Intrinsic links stay on their modules. Cross-subgraph links become standard
+boolean reference controls. Control-link properties and repeated connection
+occurrences are preserved. The report's `corpus.selections` identifies each
+source's selected graphs and reference names. A reference can be staged while
+its peer graph is closed; resolving that peer does not add it to the source's
+selected graphs.
+
+Corpus output covers declarations and reference controls. It does not bind
+PCM ownership, DAPM activation, runtime hardware configuration or calibration.
+`runtime_bindings` remains false. Without `--corpus`, `--exports` retains its
+individual-selection reporting behavior.
