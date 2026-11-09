@@ -89,6 +89,7 @@ Json::Value hardware(const Json::Value &endpoints, uint32_t subgraph)
 
         Json::Value value;
         value["module"] = endpoint["module"];
+        value["direction"] = endpoint["direction"];
         value["binding"]["status"] = endpoint["binding"]["status"];
 
         if (endpoint["binding"]["status"] == "static-bound" ||
@@ -134,7 +135,8 @@ void emit_reference(Topology &topology, const std::string &name,
 }
 
 Compilation compile_corpus(const std::vector<Source> &sources,
-                            const Json::Value &factored, uint32_t first_id)
+                            const Json::Value &factored, uint32_t first_id,
+                            const Json::Value &hardware_widgets)
 {
     Compilation result;
     auto &report = result.report;
@@ -284,12 +286,28 @@ Compilation compile_corpus(const std::vector<Source> &sources,
         throw std::runtime_error("Corpus graph IDs exceed the native range");
 
     std::map<uint32_t, uint32_t> graph_ids;
+    std::set<uint32_t> backend_ids;
     uint32_t graph_id = first_id;
+
+    for (const auto &dai : hardware_widgets["reserved_dais"])
+        backend_ids.insert(dai.asUInt());
 
     for (const auto &[id, subgraph] : subgraphs) {
         graph_ids.emplace(id, graph_id);
         auto compiled = compile_graph(source_for(id, subgraph.records),
                                       graph_id++, subgraph.endpoints);
+        if (!hardware_widgets.isNull())
+            bind_hardware_widgets(compiled, graph_ids.at(id),
+                                   subgraph.endpoints, hardware_widgets);
+
+        if (!hardware_widgets.isNull() &&
+            backend_ids.count(graph_ids.at(id))) {
+            issue(compiled.report, "compiler-hardware-graph-id-collision",
+                  id, graph_ids.at(id));
+            compiled.report["can_emit"] = false;
+            compiled.topology = {};
+        }
+
         compiled.report["subgraph"] = id;
         compiled.report["graph_id"] = graph_ids.at(id);
         report["subgraphs"].append(compiled.report);

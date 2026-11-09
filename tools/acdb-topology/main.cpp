@@ -42,6 +42,7 @@ int main(int argc, char **argv)
         std::set<uint32_t> key_ids;
         std::string exports, input, output, report;
         std::string resources, usecases, dtb, selection_contexts;
+        std::string hardware_widgets;
         Json::Value context(Json::objectValue), devices(Json::arrayValue);
         uint32_t graph_id = 0;
         bool corpus = false;
@@ -59,7 +60,8 @@ int main(int argc, char **argv)
                           << "  [--device PAL_DEVICE ... --stream-type TYPE\n"
                           << "   --device-pp-type TYPE\n"
                           << "   --context NAME=VALUE ...]\n"
-                          << "  [--selection-contexts FILE]\n";
+                          << "  [--selection-contexts FILE]\n"
+                          << "  [--hardware-widgets FILE]\n";
                 return 0;
             }
 
@@ -105,6 +107,8 @@ int main(int argc, char **argv)
                 devices.append(value);
             else if (option == "--selection-contexts")
                 selection_contexts = value;
+            else if (option == "--hardware-widgets")
+                hardware_widgets = value;
             else if (option == "--stream-type")
                 context["StreamType"] = value;
             else if (option == "--device-pp-type")
@@ -132,6 +136,10 @@ int main(int argc, char **argv)
                            int(!dtb.empty());
         if (board_inputs && board_inputs != 3)
             throw std::runtime_error("Supply all three board inputs");
+
+        if (!hardware_widgets.empty() && (!board_inputs || !corpus))
+            throw std::runtime_error(
+                "Hardware widgets require board inputs and corpus mode");
 
         if (!board_inputs && (!context.empty() || !devices.empty() ||
                              !selection_contexts.empty()))
@@ -225,8 +233,16 @@ int main(int argc, char **argv)
         bool can_emit = supported == graphs.size();
 
         if (corpus) {
+            Json::Value widgets;
+
+            if (!hardware_widgets.empty()) {
+                widgets = acdb_topology::read_hardware_widgets(
+                    read_json(hardware_widgets), board);
+                result["hardware_widgets"] = hardware_widgets;
+            }
+
             auto compiled = acdb_topology::compile_corpus(
-                sources, result["factored"], graph_id);
+                sources, result["factored"], graph_id, widgets);
             result["corpus"] = compiled.report;
             can_emit = compiled.report["can_emit"].asBool();
             topology = compiled.topology.render();

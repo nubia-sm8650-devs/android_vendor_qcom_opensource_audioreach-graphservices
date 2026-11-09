@@ -272,7 +272,7 @@ def corpus_fixtures():
     return [together, left, right]
 
 
-def widgets(data, kinds=None, blocks=None):
+def widgets(data, kinds=None, blocks=None, controls=None):
     position = 0
     result = {}
     while position < len(data):
@@ -290,6 +290,8 @@ def widgets(data, kinds=None, blocks=None):
             name = data[position + 8:position + 52].split(b"\0")[0]
             private_size, = struct.unpack_from("<I", data,
                                                position + widget_size - 4)
+            num_controls, = struct.unpack_from("<I", data,
+                                               position + widget_size - 8)
             position += widget_size
             private_end = position + private_size
             groups = []
@@ -310,6 +312,22 @@ def widgets(data, kinds=None, blocks=None):
             result[name.decode()] = groups
             if kinds is not None:
                 kinds[name.decode()] = widget_type
+            for _ in range(num_controls):
+                control_name = data[position + 8:position + 52]
+                control_name = control_name.split(b"\0")[0].decode()
+                ops = struct.unpack_from("<3I", data, position + 56)
+                size, minimum, maximum = struct.unpack_from("<3I", data,
+                                                            position + 204)
+                private_size, = struct.unpack_from("<I", data,
+                                                   position + size - 4)
+                if controls is not None:
+                    controls[name.decode()] = {
+                        "name": control_name, "ops": ops,
+                        "min": minimum, "max": maximum,
+                        "channels": [struct.unpack_from("<4I", data,
+                                     position + 228 + i * 16)
+                                     for i in range(2)]}
+                position += size + private_size
         assert position == end
     return result
 
@@ -343,6 +361,29 @@ def parameter_controls(data):
             position += size + private_size
 
         assert position == end
+
+    return result
+
+
+def dapm_routes(data):
+    position = 0
+    result = []
+
+    while position < len(data):
+        header = struct.unpack_from("<9I", data, position)
+        position += header[4]
+        end = position + header[6]
+
+        if header[3] == 4:
+            for _ in range(header[8]):
+                result.append(tuple(value.split(b"\0")[0].decode()
+                                    for value in struct.unpack_from(
+                                        "<44s44s44s", data, position)))
+                position += 132
+
+            assert position == end
+
+        position = end
 
     return result
 
@@ -467,8 +508,10 @@ class CompilerTest(unittest.TestCase):
         if not shutil.which("alsatplg"):
             self.skipTest("alsatplg is not installed")
         binary = self.root / "topology.bin"
-        subprocess.run(["alsatplg", "-c", str(self.output), "-o", str(binary)],
-                       check=True, capture_output=True)
+        completed = subprocess.run(["alsatplg", "-c", str(self.output),
+                                    "-o", str(binary)],
+                                   capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         return widgets(binary.read_bytes(), kinds, blocks)
 
     def test_conventional_topology_preserves_declarations(self):
@@ -1134,6 +1177,69 @@ class CompilerTest(unittest.TestCase):
         self.assertEqual(endpoint["tag_parameters"][0]["parameters"][0]
                          ["payload"], words(3, 1, 1).hex())
         self.assertFalse(report["graphs"][0]["runtime_bindings"])
+        hardware_widgets = self.root / "hardware-widgets.json"
+
+        for family, direction, dai, port, module, context in (
+                ("MI2S", "playback", 16, "Primary MI2S Playback", 0x4002,
+                 ["--device", "OUT"]),
+                ("CODEC_DMA", "capture", 120, "TX_CODEC_DMA_TX_3 Capture",
+                 0x4001, qualified)):
+            with self.subTest(hardware_gate=direction):
+                widget = {"dai": dai, "direction": direction, "name": port}
+                hardware_widgets.write_text(json.dumps({
+                    "version": 1, "widgets": [widget]}))
+                completed = self.run_exports([hardware_fixture(family)],
+                    *options, *context, "--corpus", "--graph-id", "256",
+                    "--hardware-widgets", str(hardware_widgets),
+                    "--output", str(self.output))
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.read_topology()
+                binary = (self.root / "topology.bin").read_bytes()
+                controls = {}
+                decoded = widgets(binary, controls=controls)
+                corpus = json.loads(self.report.read_text())["corpus"]
+                self.assertFalse(corpus["runtime_bindings"])
+                gate, = corpus["subgraphs"][0]["hardware_gates"]
+                self.assertEqual((gate["dai"], gate["graph_id"],
+                                  gate["module"], gate["direction"]),
+                                 (dai, 256, module, direction))
+                marker = gate["marker"]
+                self.assertEqual(decoded[marker], [{1: 256}])
+                control = controls[marker]
+                self.assertEqual(gate["control"], marker + " " + control["name"])
+                self.assertEqual(control["ops"], (64, 64, 1))
+                self.assertEqual((control["min"], control["max"]), (0, 1))
+                self.assertTrue(all(c[1:3] == (0xFFFFFFFF, 0)
+                                    for c in control["channels"]))
+                expected = ((marker, control["name"], f"m{module}"),
+                            (port, "", marker)) if direction == "playback" else (
+                            (marker, control["name"], port),
+                            (f"m{module}", "", marker))
+                self.assertEqual(set(dapm_routes(binary)), set(expected))
+
+                hardware_widgets.write_text(json.dumps({
+                    "version": 1, "widgets": []}))
+                self.output.write_text("retain")
+                completed = self.run_exports([hardware_fixture(family)],
+                    *options, *context, "--corpus", "--graph-id", "256",
+                    "--hardware-widgets", str(hardware_widgets),
+                    "--output", str(self.output))
+                self.assertEqual(completed.returncode, 2, completed.stderr)
+                self.assertEqual(self.output.read_text(), "retain")
+
+        hardware_widgets.write_text(json.dumps({
+            "version": 1, "widgets": [{"dai": 120, "direction": "capture",
+                                       "name": "TX_CODEC_DMA_TX_3 Capture"}]}))
+        completed = self.run_exports([hardware_fixture("CODEC_DMA")],
+            *options, *qualified, "--corpus", "--graph-id", "16",
+            "--hardware-widgets", str(hardware_widgets),
+            "--output", str(self.output))
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(self.output.read_text(), "retain")
+        corpus = json.loads(self.report.read_text())["corpus"]
+        self.assertIn("compiler-hardware-graph-id-collision",
+                      {p["kind"] for p in corpus["issues"]})
+
         kv.write_text(kv.read_text().replace(
             'DevicePPType="MIC"',
             'DevicePPType="MIC" CustomConfig="voice-mic"'))

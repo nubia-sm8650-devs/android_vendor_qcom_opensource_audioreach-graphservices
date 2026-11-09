@@ -41,7 +41,13 @@ Json::Value query_graph(const std::vector<std::string> &paths,
 Compilation compile_graph(const Source &graph, uint32_t graph_id,
                            const Json::Value &endpoints);
 Compilation compile_corpus(const std::vector<Source> &sources,
-                            const Json::Value &factored, uint32_t first_id);
+                            const Json::Value &factored, uint32_t first_id,
+                            const Json::Value &hardware_widgets = {});
+Json::Value read_hardware_widgets(const Json::Value &input,
+                                 const Json::Value &board);
+void bind_hardware_widgets(Compilation &compiled, uint32_t graph_id,
+                           const Json::Value &endpoints,
+                           const Json::Value &widgets);
 std::string module_widget_type(uint32_t module);
 Json::Value factor_sources(const std::vector<Source> &sources);
 void resolve_connections(Json::Value &factored);
