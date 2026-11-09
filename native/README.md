@@ -171,6 +171,9 @@ rejected; absent declarations do not generate stock aliases.
 
 Use `Runtime::register_events()` with one native module-event registration
 record and the owning PCM ID. The module must belong to the opened session.
+The overload without a PCM ID resolves the module's directional frontend
+owner from the selected DAPM paths. It requires exactly one owner and rejects
+shared-module ambiguity instead of choosing a frontend by occurrence order.
 Use `Runtime::read_event()` to consume one queued native module-event payload.
 An empty queue returns `-EAGAIN`; queue overflow returns `-EOVERFLOW` without
 replacing the caller's output.
