@@ -129,3 +129,25 @@ Outside the callback, use `Runtime::set_parameters()` and
 lock. A failed batch may leave an acknowledged prefix applied. These APIs
 do not register persistent data or infer ownership for service-target IIDs
 3 and 4, which return `-EOPNOTSUPP`.
+
+## PCM events and data buffer descriptor
+
+Use `Runtime::register_events()` with one native module-event registration
+record and the owning PCM ID. The module must belong to the opened session.
+Use `Runtime::read_event()` to consume one queued native module-event payload.
+An empty queue returns `-EAGAIN`; queue overflow returns `-EOVERFLOW` without
+replacing the caller's output. These operations do not install a notification
+listener or translate events into AGM callbacks.
+
+`Runtime::export_buffer()` returns an owned CLOEXEC descriptor that only maps
+the data buffer of an open PCM, from `SNDRV_PCM_IOCTL_ANONYMOUS_DUP`, and the
+buffer size in bytes. Initialize the descriptor output to `-1` and close it
+when no longer needed. The descriptor and every mapping made through it keep
+the kernel stream open, so the PCM stays busy after session close until they
+are released.
+
+All three operations require a PCM in the session's bindings, derive its
+direction from those bindings and reject pending STOP/close cleanup. They
+address ALSA controls by full PCM identity, not by name or numeric-ID cache.
+The lower-level functions in `ar_topology_pcm_controls.h` provide the same
+transport without session ownership policy.
