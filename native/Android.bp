@@ -1,0 +1,42 @@
+cc_library_shared {
+    name: "libar-topology",
+    vendor: true,
+    srcs: [
+        "defaults.cpp",
+        "prepare.cpp",
+    ],
+    export_include_dirs: ["include"],
+    cpp_std: "c++17",
+    cppflags: ["-fexceptions"],
+    cflags: ["-Wall", "-Wextra", "-Werror"],
+    header_libs: ["libarosal_headers"],
+    shared_libs: [
+        "libar-acdb",
+        "libtinyalsa",
+    ],
+}
+
+cc_test_host {
+    name: "ar-topology-prepare-test",
+    srcs: [
+        "defaults.cpp",
+        "prepare.cpp",
+        "tests/prepare_test.cpp",
+    ],
+    local_include_dirs: ["include"],
+    include_dirs: [
+        "hardware/qcom-caf/sm8650/audio/graphservices/acdb/api",
+        "hardware/qcom-caf/sm8650/audio/graphservices/ar_osal/api",
+        "external/tinyalsa/include",
+        "bionic/libc/kernel/uapi",
+    ],
+    cpp_std: "c++17",
+    cppflags: ["-fexceptions"],
+    cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],
+    gtest: false,
+    target: {
+        darwin: {
+            enabled: false,
+        },
+    },
+}
