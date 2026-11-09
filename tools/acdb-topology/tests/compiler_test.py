@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -570,7 +571,8 @@ class CompilerTest(unittest.TestCase):
                 playback = direction == "playback"
                 old, new = (0x07001005, 0x07001000) if playback else (
                             0x07001004, 0x07001001)
-                for source in sources:
+                for index, source in enumerate(sources):
+                    source["graph_keys"] = [["0xa1000000", hex(index)]]
                     source["graph_open"] = source["graph_open"].replace(
                         words(old).hex(), words(new).hex())
                 root_sg, other_sg = ((0xB0000001, 0xB0000002) if playback else
@@ -604,6 +606,9 @@ class CompilerTest(unittest.TestCase):
                 self.assertEqual(exported["references"], [
                     {key: value for key, value in reference.items()
                      if key != "native"} for reference in corpus["references"]])
+                if os.environ.get("AR_TOPOLOGY_BINDINGS_TEST"):
+                    subprocess.run([os.environ["AR_TOPOLOGY_BINDINGS_TEST"],
+                                    str(manifest)], check=True)
                 for selection, original in zip(exported["selections"], sources):
                     self.assertEqual(selection["graph_keys"],
                                      original["graph_keys"])

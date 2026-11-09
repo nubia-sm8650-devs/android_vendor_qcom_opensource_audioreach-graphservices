@@ -2,6 +2,7 @@ cc_library_shared {
     name: "libar-topology",
     vendor: true,
     srcs: [
+        "bindings.cpp",
         "defaults.cpp",
         "prepare.cpp",
     ],
@@ -11,9 +12,21 @@ cc_library_shared {
     cflags: ["-Wall", "-Wextra", "-Werror"],
     header_libs: ["libarosal_headers"],
     shared_libs: [
+        "libjsoncpp",
         "libar-acdb",
         "libtinyalsa",
     ],
+}
+
+cc_test_host {
+    name: "ar-topology-bindings-test",
+    srcs: ["bindings.cpp", "tests/bindings_test.cpp"],
+    local_include_dirs: ["include"],
+    shared_libs: ["libjsoncpp"],
+    cpp_std: "c++17",
+    cppflags: ["-fexceptions"],
+    cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],
+    gtest: false,
 }
 
 cc_test_host {

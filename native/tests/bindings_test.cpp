@@ -1,0 +1,164 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
+#include "ar_topology_bindings.h"
+
+#include <cassert>
+#include <cerrno>
+#include <fstream>
+#include <stdexcept>
+#include <json/json.h>
+
+static Json::Value fixture()
+{
+    Json::Value input;
+    input["version"] = 1;
+    input["frontends"] = Json::Value(Json::arrayValue);
+    input["references"] = Json::Value(Json::arrayValue);
+    input["selections"] = Json::Value(Json::arrayValue);
+    input["hardware_gates"] = Json::Value(Json::arrayValue);
+
+    for (unsigned id : {1, 2, 3}) {
+        Json::Value selection;
+        Json::Value pair(Json::arrayValue);
+        pair.append("0xa");
+        pair.append(std::to_string(id));
+        selection["graph_keys"].append(pair);
+        selection["graphs"].append(id);
+        Json::Value tuning;
+        tuning["graph_id"] = id;
+        tuning["subgraph"] = 0xb0000000u + id;
+        tuning["set_control"] = "set" + std::to_string(id);
+        selection["tuning"].append(tuning);
+        selection["references"] = Json::Value(Json::arrayValue);
+
+        if (id == 1)
+            selection["references"].append("link");
+
+        input["selections"].append(selection);
+    }
+
+    Json::Value frontend;
+    frontend["pcm_id"] = 0;
+    frontend["graph_id"] = 1;
+    frontend["direction"] = "playback";
+    frontend["mode"] = "pcm";
+    input["frontends"].append(frontend);
+    Json::Value reference;
+    reference["name"] = "link";
+    reference["control"] = false;
+    reference["source_graph"] = 1;
+    reference["destination_graph"] = 2;
+    reference["path_control"] = "path";
+    input["references"].append(reference);
+    Json::Value hardware;
+    hardware["graph_id"] = 2;
+    hardware["control"] = "hardware";
+    input["hardware_gates"].append(hardware);
+    return input;
+}
+
+static void emitted(const char *path)
+{
+    std::ifstream file(path);
+    Json::Value input;
+    file >> input;
+    ar_topology::Bindings bindings(input);
+
+    for (const auto &selection : input["selections"]) {
+        ar_topology::Keys keys;
+
+        for (const auto &pair : selection["graph_keys"])
+            keys.emplace_back(std::stoul(pair[0].asString(), nullptr, 0),
+                              std::stoul(pair[1].asString(), nullptr, 0));
+
+        ar_topology::Plan plan;
+        int status = bindings.select({keys}, plan);
+
+        if (!selection["ownership_bound"].asBool()) {
+            assert(status == -EOPNOTSUPP);
+            continue;
+        }
+
+        assert(!status);
+        std::set<unsigned> graphs;
+        std::set<std::string> references, paths;
+
+        for (const auto &graph : selection["graphs"])
+            graphs.insert(graph.asUInt());
+
+        for (const auto &[id, graph] : plan.graphs) {
+            assert(graphs.erase(id));
+            bool matched = false;
+
+            for (const auto &tuning : selection["tuning"])
+                matched |= tuning["graph_id"].asUInt() == id &&
+                    tuning["subgraph"].asUInt() == graph.subgraph &&
+                    tuning["set_control"].asString() == graph.set_control;
+
+            assert(matched);
+        }
+
+        assert(graphs.empty());
+
+        for (const auto &reference : selection["references"])
+            references.insert(reference.asString());
+
+        for (const auto &path_control : selection["paths"])
+            paths.insert(path_control.asString());
+
+        assert(plan.references == references);
+        assert(plan.paths == paths);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2) {
+        emitted(argv[1]);
+        return 0;
+    }
+
+    auto input = fixture();
+    ar_topology::Bindings bindings(input);
+    ar_topology::Plan plan;
+    assert(!bindings.select({{{10, 1}}}, plan));
+    assert(plan.graphs.size() == 1 && plan.graphs.count(1));
+    assert(plan.references == std::set<std::string>{"link"});
+    assert(plan.paths.empty() && plan.hardware.empty());
+    assert(bindings.select({{{10, 2}}}, plan) == -EOPNOTSUPP);
+    assert(plan.graphs.size() == 1 && plan.graphs.count(1));
+    assert(!bindings.select({{{10, 1}}, {{10, 2}}, {{10, 1}}}, plan));
+    assert(plan.graphs.size() == 2 && plan.graphs.count(2));
+    assert(plan.paths == std::set<std::string>{"path"});
+    assert(plan.hardware == std::set<std::string>{"hardware"});
+    assert(bindings.select({{{10, 1}}, {{10, 3}}}, plan) == -EOPNOTSUPP);
+    assert(bindings.select({{{10, 99}}}, plan) == -ENOENT);
+    assert(bindings.select({{{10, 1}, {10, 1}}}, plan) == -EINVAL);
+    assert(plan.graphs.size() == 2);
+
+    input["frontends"][0]["direction"] = "capture";
+    input["references"][0]["source_graph"] = 2;
+    input["references"][0]["destination_graph"] = 1;
+    ar_topology::Bindings capture(input);
+    assert(!capture.select({{{10, 1}}, {{10, 2}}}, plan));
+    assert(plan.frontends.size() == 1 && plan.frontends[0].capture);
+
+    Json::Value extra(Json::arrayValue);
+    extra.append("0x1");
+    extra.append("0x2");
+    input["selections"][0]["graph_keys"].append(extra);
+    ar_topology::Bindings complete(input);
+    assert(complete.select({{{10, 1}}}, plan) == -ENOENT);
+    assert(!complete.select({{{10, 1}, {1, 2}}, {{10, 2}}}, plan));
+    assert(!complete.select({{{1, 2}, {10, 1}}, {{10, 2}}}, plan));
+
+    input["selections"][0]["graph_keys"][0][1] = "0xfffffffff";
+    bool rejected = false;
+
+    try {
+        ar_topology::Bindings invalid(input);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+
+    assert(rejected);
+}
