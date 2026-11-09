@@ -1,12 +1,18 @@
-cc_library_shared {
-    name: "libar-topology",
-    vendor: true,
+filegroup {
+    name: "ar-topology-runtime-sources",
     srcs: [
         "bindings.cpp",
         "defaults.cpp",
+        "parameters.cpp",
         "prepare.cpp",
         "runtime.cpp",
     ],
+}
+
+cc_library_shared {
+    name: "libar-topology",
+    vendor: true,
+    srcs: [":ar-topology-runtime-sources"],
     export_include_dirs: ["include"],
     export_shared_lib_headers: ["libtinyalsa"],
     cpp_std: "c++17",
@@ -23,10 +29,7 @@ cc_library_shared {
 cc_test_host {
     name: "ar-topology-runtime-test",
     srcs: [
-        "bindings.cpp",
-        "defaults.cpp",
-        "prepare.cpp",
-        "runtime.cpp",
+        ":ar-topology-runtime-sources",
         "tests/runtime_test.cpp",
     ],
     local_include_dirs: ["include"],

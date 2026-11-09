@@ -314,6 +314,18 @@ int Runtime::acquire(const std::vector<Keys> &requests,
 
 int Runtime::prepare(SessionId id, Configure configure, void *context)
 {
+    return prepare_impl(id, configure, nullptr, context);
+}
+
+int Runtime::prepare_parameters(SessionId id, ConfigureParameters configure,
+                                void *context)
+{
+    return prepare_impl(id, nullptr, configure, context);
+}
+
+int Runtime::prepare_impl(SessionId id, Configure configure,
+                          ConfigureParameters parameters, void *context)
+{
     std::lock_guard<std::mutex> lock(impl->mutex);
     auto found = impl->sessions.find(id);
     if (found == impl->sessions.end())
@@ -332,7 +344,9 @@ int Runtime::prepare(SessionId id, Configure configure, void *context)
     }
 
     if (!session.initialized) {
-        int status = configure ? configure(context, session.streams) : 0;
+        Parameters writer(impl->mixer, session.plan);
+        int status = parameters ? parameters(context, writer, session.streams) :
+            configure ? configure(context, session.streams) : 0;
         if (status)
             return status;
 
@@ -353,6 +367,36 @@ int Runtime::prepare(SessionId id, Configure configure, void *context)
     }
 
     return 0;
+}
+
+int Runtime::set_parameters(SessionId id, const void *data, size_t size,
+                            size_t *applied)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    auto found = impl->sessions.find(id);
+    if (found == impl->sessions.end())
+        return -ENOENT;
+
+    Parameters writer(impl->mixer, found->second.plan);
+
+    return writer.set(data, size, applied);
+}
+
+int Runtime::set_tagged_parameters(SessionId id, const Keys &gkv, uint32_t tag,
+                                   const Keys &tkv)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    auto found = impl->sessions.find(id);
+    if (found == impl->sessions.end())
+        return -ENOENT;
+
+    Parameters writer(impl->mixer, found->second.plan);
+    std::vector<uint8_t> data;
+    int status = writer.resolve_tag(gkv, tag, tkv, data);
+    if (status || data.empty())
+        return status;
+
+    return writer.set(data.data(), data.size());
 }
 
 int Runtime::start(SessionId id)
