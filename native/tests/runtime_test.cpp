@@ -31,6 +31,7 @@ struct pcm {
     snd_pcm_sync_ptr position{};
     int sync_error = 0;
     int dup_error = 0;
+    unsigned buffer_frames = 0;
 };
 
 struct mixer_ctl {
@@ -60,6 +61,8 @@ static int control_fd = -1;
 static mixer *backend_mixer;
 static unsigned backend_rate;
 static std::string backend_data_format;
+
+extern "C" int pcm_start(struct pcm *handle);
 
 extern "C" int __real_open(const char *, int, ...);
 
@@ -139,7 +142,7 @@ extern "C" int32_t acdb_ioctl(uint32_t command, const void *input,
 }
 
 extern "C" struct pcm *pcm_open(unsigned, unsigned device, unsigned flags,
-                                 struct pcm_config *)
+                                 struct pcm_config *config)
 {
     if (backend_mixer) {
         auto value = [](const char *name) -> const std::string & {
@@ -156,6 +159,7 @@ extern "C" struct pcm *pcm_open(unsigned, unsigned device, unsigned flags,
 
     auto *handle = new pcm{device};
     handle->flags = flags;
+    handle->buffer_frames = config->period_count * config->period_size;
     assert(!pipe2(handle->fds, O_CLOEXEC | O_NONBLOCK));
     open_pcms.insert(handle);
     return handle;
@@ -184,6 +188,9 @@ extern "C" int pcm_ioctl(struct pcm *handle, int request, ...)
     va_start(args, request);
     void *data = va_arg(args, void *);
     va_end(args);
+
+    if (unsigned(request) == SNDRV_PCM_IOCTL_START)
+        return pcm_start(handle);
 
     if (unsigned(request) == SNDRV_PCM_IOCTL_SYNC_PTR) {
         if (handle->sync_error) {
