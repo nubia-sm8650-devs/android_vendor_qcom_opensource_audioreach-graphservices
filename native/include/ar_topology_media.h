@@ -21,6 +21,7 @@ struct Media {
 struct HardwareConfig {
     Keys selection;
     Media media;
+    BackendId backend{};
 };
 
 }

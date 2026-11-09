@@ -51,6 +51,7 @@ struct Runtime::Impl {
         bool initialized = false;
         bool managed_media = false;
         std::map<BackendId, Media> media;
+        std::map<BackendId, std::vector<uint32_t>> channel_maps;
     };
 
     unsigned card;
@@ -147,6 +148,10 @@ struct Runtime::Impl {
                     if (!selected->second.count(backend.graph))
                         continue;
 
+                    if (!config.backend.first.empty() &&
+                        config.backend != backend.id)
+                        return -EINVAL;
+
                     matched.insert(backend.id);
                     if (matched.size() > 1)
                         return -EOPNOTSUPP;
@@ -168,6 +173,21 @@ struct Runtime::Impl {
             }
         }
 
+        if (hardware) {
+            for (const auto &[name, backend] : session.plan.backends) {
+                (void)name;
+                if (!backend.controls.count("channel_map") ||
+                    session.channel_maps.count(backend.id))
+                    continue;
+
+                auto &map = session.channel_maps[backend.id];
+                int status = media_channel_map(mixer, backend,
+                    session.media.at(backend.id), map);
+                if (status)
+                    return status;
+            }
+        }
+
         std::set<BackendId> occupied;
 
         for (const auto &[id, prior] : sessions) {
@@ -182,6 +202,13 @@ struct Runtime::Impl {
                 if (requested != session.media.end() &&
                     !(requested->second == media))
                     return -EBUSY;
+
+                auto map = session.channel_maps.find(port);
+                auto previous = prior.channel_maps.find(port);
+                if (map != session.channel_maps.end() &&
+                    previous != prior.channel_maps.end() &&
+                    map->second != previous->second)
+                    return -ESTALE;
 
                 occupied.insert(port);
             }
@@ -201,6 +228,34 @@ struct Runtime::Impl {
         }
 
         return 0;
+    }
+
+    int validate_maps(const Session &session) const noexcept
+    {
+        try {
+            std::set<BackendId> checked;
+
+            for (const auto &[name, backend] : session.plan.backends) {
+                (void)name;
+                auto expected = session.channel_maps.find(backend.id);
+                if (expected == session.channel_maps.end() ||
+                    !checked.insert(backend.id).second)
+                    continue;
+
+                std::vector<uint32_t> current;
+                int status = media_channel_map(mixer, backend,
+                    session.media.at(backend.id), current);
+                if (status)
+                    return status == -EINVAL ? -ESTALE : status;
+
+                if (current != expected->second)
+                    return -ESTALE;
+            }
+
+            return 0;
+        } catch (const std::bad_alloc &) {
+            return -ENOMEM;
+        }
     }
 
     bool exposes_untuned(const Plan &plan, const std::set<uint32_t> &tuned)
@@ -268,6 +323,11 @@ Runtime::~Runtime()
         auto id = it++->first;
         impl->release(id);
     }
+}
+
+unsigned Runtime::card_id() const
+{
+    return impl->card;
 }
 
 int Runtime::acquire(const std::vector<Keys> &requests,
@@ -469,6 +529,10 @@ int Runtime::prepare_impl(SessionId id, Configure configure,
 
     auto &session = found->second;
 
+    int map_status = impl->validate_maps(session);
+    if (map_status)
+        return map_status;
+
     for (const auto &stream : session.streams) {
         int value = state(stream);
         if (value < 0)
@@ -601,6 +665,10 @@ int Runtime::start(SessionId id)
     auto found = impl->sessions.find(id);
     if (found == impl->sessions.end())
         return -ENOENT;
+
+    int map_status = impl->validate_maps(found->second);
+    if (map_status)
+        return map_status;
 
     for (const auto &stream : found->second.streams) {
         int value = state(stream);

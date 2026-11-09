@@ -2,6 +2,7 @@
 #include "media.h"
 
 #include <cerrno>
+#include <utility>
 #include <tinyalsa/asoundlib.h>
 
 namespace ar_topology
@@ -19,7 +20,8 @@ int media_writes(struct mixer *mixer, const Backend &backend,
         sizeof(data_formats) / sizeof(data_formats[0]))
         return -EINVAL;
 
-    if (!backend.controls.count("channels"))
+    if (!backend.controls.count("channels") &&
+        !backend.controls.count("channel_map"))
         return -EOPNOTSUPP;
 
     std::map<std::string, std::string> values{
@@ -30,6 +32,9 @@ int media_writes(struct mixer *mixer, const Backend &backend,
     };
 
     for (const auto &[key, value] : values) {
+        if (key == "channels" && backend.controls.count("channel_map"))
+            continue;
+
         auto *control = mixer_get_ctl_by_name(mixer,
             backend.controls.at(key).c_str());
         if (!control)
@@ -57,6 +62,44 @@ int media_writes(struct mixer *mixer, const Backend &backend,
         if (unsigned(current) != item)
             writes.push_back({control, item});
     }
+
+    return 0;
+}
+
+int media_channel_map(struct mixer *mixer, const Backend &backend,
+                        const Media &media, std::vector<uint32_t> &channels)
+{
+    auto found = backend.controls.find("channel_map");
+    if (found == backend.controls.end())
+        return 0;
+
+    auto *control = mixer_get_ctl_by_name(mixer, found->second.c_str());
+    if (!control)
+        return -ENOENT;
+
+    if (mixer_ctl_get_type(control) != MIXER_CTL_TYPE_INT ||
+        mixer_ctl_get_num_values(control) < 2)
+        return -EINVAL;
+
+    std::vector<long> values(mixer_ctl_get_num_values(control));
+    int status = mixer_ctl_get_array(control, values.data(), values.size());
+    if (status < 0)
+        return status == -1 ? -errno : status;
+
+    if (values[0] <= 0 || size_t(values[0]) >= values.size() ||
+        uint32_t(values[0]) != media.channels)
+        return -EINVAL;
+
+    std::vector<uint32_t> output;
+
+    for (size_t i = 1; i <= size_t(values[0]); i++) {
+        if (values[i] < 0 || values[i] > 255)
+            return -ERANGE;
+
+        output.push_back(values[i]);
+    }
+
+    channels = std::move(output);
 
     return 0;
 }

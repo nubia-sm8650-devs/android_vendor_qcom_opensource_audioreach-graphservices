@@ -35,6 +35,7 @@ struct mixer_ctl {
     bool reject_parameters = false;
     Bytes bytes;
     std::vector<std::string> enums{};
+    std::vector<long> integers{};
 };
 
 struct mixer {
@@ -213,6 +214,8 @@ extern "C" struct mixer_ctl *mixer_get_ctl_by_name(struct mixer *handle,
 
 extern "C" enum mixer_ctl_type mixer_ctl_get_type(struct mixer_ctl *control)
 {
+    if (!control->integers.empty())
+        return MIXER_CTL_TYPE_INT;
     if (!control->enums.empty())
         return MIXER_CTL_TYPE_ENUM;
     return control->parameter ? MIXER_CTL_TYPE_BYTE : MIXER_CTL_TYPE_BOOL;
@@ -229,9 +232,17 @@ extern "C" const char *mixer_ctl_get_enum_string(struct mixer_ctl *control,
     return control->enums.at(item).c_str();
 }
 
-extern "C" unsigned mixer_ctl_get_num_values(struct mixer_ctl *)
+extern "C" unsigned mixer_ctl_get_num_values(struct mixer_ctl *control)
 {
-    return 1;
+    return control->integers.empty() ? 1 : control->integers.size();
+}
+
+extern "C" int mixer_ctl_get_array(struct mixer_ctl *control, void *array,
+                                    size_t count)
+{
+    assert(count == control->integers.size());
+    std::memcpy(array, control->integers.data(), count * sizeof(long));
+    return 0;
 }
 
 extern "C" int mixer_ctl_is_access_tlv_rw(struct mixer_ctl *control)
@@ -497,6 +508,47 @@ static void media_configuration()
     x.clear();
     assert(missing_channels.acquire({first.selection}, {configuration(1)},
         {first}, a, x) == -EOPNOTSUPP);
+
+    gate["dai"] = backend["dai"] = 14;
+    backend["controls"]["channel_map"] = "backend channel_map";
+    auto &map = controls.controls["backend channel_map"].integers;
+    map = {1, 157, 0};
+    Bindings codec(input);
+    Runtime mapped(0, &controls, codec);
+    HardwareConfig mono{{{10, 1}}, {48000, 1, 1, "S16_LE"}, {"/dais", 16}};
+    assert(mapped.acquire({mono.selection}, {configuration(1)}, {mono}, a, x) ==
+           -EINVAL);
+    mono.backend.second = 14;
+    mono.media.channels = 2;
+    assert(mapped.acquire({mono.selection}, {configuration(1)}, {mono}, a, x) ==
+           -EINVAL);
+    mono.media.channels = 1;
+    assert(!mapped.acquire({mono.selection}, {configuration(1)}, {mono}, a, x));
+    Initialization tuning{controls, {1, 3}};
+    map[1] = 158;
+    assert(mapped.prepare(a, initialize, &tuning) == -ESTALE);
+    assert(x[0].handle->state == SNDRV_PCM_STATE_SETUP);
+    map[1] = 157;
+    assert(!mapped.prepare(a, initialize, &tuning));
+    map[1] = 158;
+    assert(mapped.start(a) == -ESTALE);
+    assert(x[0].handle->state == SNDRV_PCM_STATE_PREPARED);
+    map[1] = 157;
+    assert(!mapped.start(a));
+    map[1] = 158;
+    mono.selection = {{10, 2}};
+    b = 0;
+    y.clear();
+    assert(mapped.acquire({mono.selection}, {configuration(2)}, {mono}, b, y) ==
+           -ESTALE);
+    assert(!b && y.empty());
+    assert(!mapped.close(a));
+    assert(!mapped.acquire({mono.selection}, {configuration(2)}, {mono}, b, y));
+    assert(!mapped.close(b));
+    assert(open_pcms.empty());
+    a = 0;
+    x.clear();
+
     gate.removeMember("backend");
     Bindings unqualified(input);
     Runtime missing_binding(0, &controls, unqualified);

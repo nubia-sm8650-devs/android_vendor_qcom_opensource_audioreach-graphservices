@@ -30,6 +30,7 @@ class Runtime {
 public:
     Runtime(unsigned card, struct mixer *mixer, const Bindings &bindings);
     ~Runtime();
+    unsigned card_id() const;
     int acquire(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,
                  SessionId &id, std::vector<Stream> &streams);
     int acquire(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,

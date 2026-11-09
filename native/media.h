@@ -17,6 +17,8 @@ struct MediaWrite {
 
 int media_writes(struct mixer *mixer, const Backend &backend,
                    const Media &media, std::vector<MediaWrite> &writes);
+int media_channel_map(struct mixer *mixer, const Backend &backend,
+                        const Media &media, std::vector<uint32_t> &channels);
 
 }
 
