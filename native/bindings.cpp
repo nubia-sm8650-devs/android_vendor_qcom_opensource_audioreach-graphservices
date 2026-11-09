@@ -376,6 +376,7 @@ int Bindings::select(const std::vector<Keys> &requests, Plan &plan) const
             } while (previous != reached.size());
 
             owned.insert(reached.begin(), reached.end());
+            result.frontend_graphs.emplace(frontend.pcm_id, std::move(reached));
         }
 
         if (result.frontends.empty() || owned.size() != result.graphs.size())

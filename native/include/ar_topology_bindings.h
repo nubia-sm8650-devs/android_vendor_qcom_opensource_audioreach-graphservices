@@ -45,6 +45,7 @@ struct Plan {
     std::map<uint32_t, uint32_t> modules;
     std::map<Keys, std::set<uint32_t>> selections;
     std::vector<Frontend> frontends;
+    std::map<uint32_t, std::set<uint32_t>> frontend_graphs;
     std::set<std::string> references, paths, hardware;
     std::map<std::string, Backend> backends;
 };

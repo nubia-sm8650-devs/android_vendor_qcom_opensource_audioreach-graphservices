@@ -650,6 +650,44 @@ int Runtime::register_events(SessionId id, uint32_t pcm, const void *data,
     return register_pcm_events(impl->card, pcm, capture, data, size);
 }
 
+int Runtime::register_events(SessionId id, const void *data, size_t size)
+{
+    if (!data || size < sizeof(uint32_t))
+        return -EINVAL;
+
+    uint32_t instance, pcm = 0;
+    std::memcpy(&instance, data, sizeof(instance));
+    {
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        auto session = impl->sessions.find(id);
+        if (session == impl->sessions.end())
+            return -ENOENT;
+
+        const auto &plan = session->second.plan;
+        auto module = plan.modules.find(instance);
+        if (module == plan.modules.end())
+            return -ENOENT;
+
+        bool matched = false;
+
+        for (const auto &[frontend, graphs] : plan.frontend_graphs) {
+            if (!graphs.count(module->second))
+                continue;
+
+            if (matched)
+                return -EOPNOTSUPP;
+
+            pcm = frontend;
+            matched = true;
+        }
+
+        if (!matched)
+            return -ENOENT;
+    }
+
+    return register_events(id, pcm, data, size);
+}
+
 int Runtime::read_event(SessionId id, uint32_t pcm, std::vector<uint8_t> &data)
 {
     std::lock_guard<std::mutex> lock(impl->mutex);

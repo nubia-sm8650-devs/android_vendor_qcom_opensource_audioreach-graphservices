@@ -47,6 +47,7 @@ public:
     int export_buffer(SessionId id, uint32_t pcm, int &fd, uint32_t &bytes);
     int register_events(SessionId id, uint32_t pcm, const void *data,
                           size_t size);
+    int register_events(SessionId id, const void *data, size_t size);
     int read_event(SessionId id, uint32_t pcm, std::vector<uint8_t> &data);
     int subscribe_events(SessionId id, uint32_t pcm, int &fd);
     int start(SessionId id);
