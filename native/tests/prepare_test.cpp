@@ -166,5 +166,15 @@ int main()
     assert(ar_topology::prepare(&handle, &controls, graphs) == -EIO);
     assert(handle.state == SNDRV_PCM_STATE_SETUP);
     controls.controls.at("ar_g256_set").reject = false;
+    auto initialize = [](void *opaque) noexcept {
+        auto *handle = static_cast<pcm *>(opaque);
+        assert(handle->state == SNDRV_PCM_STATE_SETUP);
+        assert(active_mixer->controls.at("ar_g256_set").received ==
+               expected.at("ar_g256_set"));
+        return -ECANCELED;
+    };
+    assert(ar_topology::prepare(&handle, &controls, graphs, initialize,
+                                &handle) == -ECANCELED);
+    assert(handle.state == SNDRV_PCM_STATE_SETUP);
     assert(!ar_topology::prepare(&handle, &controls, graphs));
 }

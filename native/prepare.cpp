@@ -17,6 +17,13 @@ namespace ar_topology
 int prepare(struct pcm *pcm, struct mixer *mixer,
              const std::vector<Graph> &new_graphs)
 {
+    return prepare(pcm, mixer, new_graphs, nullptr, nullptr);
+}
+
+int prepare(struct pcm *pcm, struct mixer *mixer,
+             const std::vector<Graph> &new_graphs,
+             Initialize initialize, void *context)
+{
     if (!pcm || !mixer)
         return -EINVAL;
 
@@ -77,7 +84,15 @@ int prepare(struct pcm *pcm, struct mixer *mixer,
                 return status == -1 ? -errno : status;
         }
 
-        return pcm_prepare(pcm);
+        if (initialize) {
+            int status = initialize(context);
+            if (status)
+                return status;
+        }
+
+        int status = pcm_prepare(pcm);
+
+        return status == -1 ? -errno : status;
     } catch (const std::bad_alloc &) {
         return -ENOMEM;
     }
