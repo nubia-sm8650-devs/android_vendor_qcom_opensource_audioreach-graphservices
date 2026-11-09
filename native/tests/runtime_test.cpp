@@ -207,6 +207,7 @@ static Json::Value fixture()
             tuning["graph_id"] = graph;
             tuning["subgraph"] = 0xb0000000u + graph.asUInt();
             tuning["set_control"] = "set" + graph.asString();
+            tuning["modules"].append(0x4000 + graph.asUInt());
             selection["tuning"].append(tuning);
         }
 

@@ -30,6 +30,8 @@ struct Reference {
 
 struct Plan {
     std::map<uint32_t, Graph> graphs;
+    std::map<uint32_t, uint32_t> modules;
+    std::map<Keys, std::set<uint32_t>> selections;
     std::vector<Frontend> frontends;
     std::set<std::string> references, paths, hardware;
 };

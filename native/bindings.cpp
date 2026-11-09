@@ -78,6 +78,7 @@ struct Bindings::Impl {
     };
 
     std::map<uint32_t, Graph> graphs;
+    std::map<uint32_t, std::set<uint32_t>> modules;
     std::map<Keys, Selection> selections;
     std::map<uint32_t, Frontend> frontends;
     std::map<std::string, Reference> references;
@@ -92,6 +93,7 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
         throw std::invalid_argument("Invalid topology bindings");
 
     std::map<uint32_t, uint32_t> subgraphs;
+    std::map<uint32_t, uint32_t> module_owners;
     std::map<std::string, uint32_t> controls;
 
     for (const auto &selection : input["selections"]) {
@@ -113,6 +115,23 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
             uint32_t id = number(graph["graph_id"]);
             Graph binding{number(graph["subgraph"]),
                            text(graph["set_control"])};
+
+            if (!graph["modules"].isArray())
+                throw std::invalid_argument("Missing module ownership");
+
+            std::set<uint32_t> modules;
+
+            for (const auto &module : graph["modules"]) {
+                uint32_t instance = number(module);
+                auto [owner, added] = module_owners.emplace(instance, id);
+                if (!modules.insert(instance).second ||
+                    (!added && owner->second != id))
+                    throw std::invalid_argument("Conflicting module owner");
+            }
+
+            auto [previous, added] = impl->modules.emplace(id, modules);
+            if (!added && previous->second != modules)
+                throw std::invalid_argument("Conflicting module membership");
 
             if (!value.graphs.count(id) || !tuned.insert(id).second)
                 throw std::invalid_argument("Tuning differs from membership");
@@ -211,12 +230,19 @@ int Bindings::select(const std::vector<Keys> &requests, Plan &plan) const
         Plan result;
 
         for (const auto &keys : requests) {
-            auto found = impl->selections.find(normalize(keys));
+            auto normalized = normalize(keys);
+            auto found = impl->selections.find(normalized);
             if (found == impl->selections.end())
                 return -ENOENT;
 
-            for (uint32_t id : found->second.graphs)
+            result.selections.emplace(normalized, found->second.graphs);
+
+            for (uint32_t id : found->second.graphs) {
                 result.graphs.emplace(id, impl->graphs.at(id));
+
+                for (uint32_t instance : impl->modules.at(id))
+                    result.modules.emplace(instance, id);
+            }
 
             result.references.insert(found->second.references.begin(),
                                       found->second.references.end());

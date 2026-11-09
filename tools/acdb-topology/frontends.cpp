@@ -106,7 +106,6 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
         calibration["subgraph"] = id;
         calibration["graph_id"] = root.graph;
         calibration["set_control"] = subgraph["parameter_controls"]["set"];
-        tuning.emplace(root.graph, calibration);
         Source source = read_source(subgraph["source"]);
 
         for (const auto &parameter : source.open) {
@@ -126,6 +125,14 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
             }
         }
 
+        calibration["modules"] = Json::Value(Json::arrayValue);
+
+        for (const auto &[instance, type] : root.modules) {
+            (void)type;
+            calibration["modules"].append(instance);
+        }
+
+        tuning.emplace(root.graph, calibration);
         roots.emplace(id, std::move(root));
     }
 

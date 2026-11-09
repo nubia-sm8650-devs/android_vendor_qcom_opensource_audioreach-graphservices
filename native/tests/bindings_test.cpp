@@ -2,6 +2,7 @@
 #include "ar_topology_bindings.h"
 
 #include <cassert>
+#include <algorithm>
 #include <cerrno>
 #include <fstream>
 #include <stdexcept>
@@ -27,6 +28,7 @@ static Json::Value fixture()
         tuning["graph_id"] = id;
         tuning["subgraph"] = 0xb0000000u + id;
         tuning["set_control"] = "set" + std::to_string(id);
+        tuning["modules"].append(0x4000 + id);
         selection["tuning"].append(tuning);
         selection["references"] = Json::Value(Json::arrayValue);
 
@@ -80,6 +82,7 @@ static void emitted(const char *path)
 
         assert(!status);
         std::set<unsigned> graphs;
+        std::map<uint32_t, uint32_t> modules;
         std::set<std::string> references, paths;
 
         for (const auto &graph : selection["graphs"])
@@ -98,6 +101,15 @@ static void emitted(const char *path)
         }
 
         assert(graphs.empty());
+
+        for (const auto &tuning : selection["tuning"])
+            for (const auto &module : tuning["modules"])
+                modules.emplace(module.asUInt(), tuning["graph_id"].asUInt());
+
+        assert(plan.modules == modules);
+        std::sort(keys.begin(), keys.end());
+        assert(plan.selections.size() == 1);
+        assert(plan.selections.count(keys));
 
         for (const auto &reference : selection["references"])
             references.insert(reference.asString());
@@ -122,12 +134,17 @@ int main(int argc, char **argv)
     ar_topology::Plan plan;
     assert(!bindings.select({{{10, 1}}}, plan));
     assert(plan.graphs.size() == 1 && plan.graphs.count(1));
+    assert((plan.modules == std::map<uint32_t, uint32_t>{{0x4001, 1}}));
+    assert((plan.selections.at({{10, 1}}) == std::set<uint32_t>{1}));
     assert(plan.references == std::set<std::string>{"link"});
     assert(plan.paths.empty() && plan.hardware.empty());
     assert(bindings.select({{{10, 2}}}, plan) == -EOPNOTSUPP);
     assert(plan.graphs.size() == 1 && plan.graphs.count(1));
     assert(!bindings.select({{{10, 1}}, {{10, 2}}, {{10, 1}}}, plan));
     assert(plan.graphs.size() == 2 && plan.graphs.count(2));
+    assert((plan.modules == std::map<uint32_t, uint32_t>{{0x4001, 1},
+                                                        {0x4002, 2}}));
+    assert(plan.selections.size() == 2);
     assert(plan.paths == std::set<std::string>{"path"});
     assert(plan.hardware == std::set<std::string>{"hardware"});
     assert(bindings.select({{{10, 1}}, {{10, 3}}}, plan) == -EOPNOTSUPP);
@@ -161,4 +178,23 @@ int main(int argc, char **argv)
     }
 
     assert(rejected);
+
+    for (bool missing : {false, true}) {
+        input = fixture();
+
+        if (missing)
+            input["selections"][0]["tuning"][0].removeMember("modules");
+        else
+            input["selections"][1]["tuning"][0]["modules"][0] = 0x4001;
+
+        rejected = false;
+
+        try {
+            ar_topology::Bindings invalid(input);
+        } catch (const std::invalid_argument &) {
+            rejected = true;
+        }
+
+        assert(rejected);
+    }
 }
