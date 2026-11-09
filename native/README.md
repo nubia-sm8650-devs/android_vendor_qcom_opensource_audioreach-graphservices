@@ -67,3 +67,34 @@ switching support. PCM closure follows Tinyalsa's close interface, which
 does not report DSP teardown failures. Successful userspace cleanup does
 not establish DSP CLOSE acknowledgement or restart recovery. PAL/AGM still
 uses the stock backend.
+
+## Separate lifecycle phases
+
+Use `Runtime::acquire()` to open the selected PCMs and apply first-use
+defaults while leaving them in SETUP. Cached, tagged and custom parameters
+can then be sent without another default application overwriting them.
+`Runtime::prepare()` runs the optional configuration callback before the
+first PCM PREPARE. A successful callback is not repeated when retrying a
+partial PCM preparation failure. Preparation failure retains the session
+for retry or close. `Runtime::open()` remains the acquire-and-prepare
+convenience API, with cleanup on preparation failure.
+
+`Runtime::start()` requires prepared PCMs and starts their data paths.
+Playback clients must supply data before starting; hostless PCMs have no
+host-data requirement. A partial multi-PCM start failure keeps the started
+PCMs running. Retrying starts only the remaining prepared PCMs, without
+assuming rollback. `Runtime::stop()` drops the PCMs but retains graph and
+route ownership. Prepare again before restarting, without reapplying
+defaults to shared graphs. Borrowed handles remain valid until close.
+
+These phases require the matching native kernel lifecycle implementation.
+PCM PREPARE prepares host and processing graphs without START. PCM START
+starts them after the backend, and STOP releases that client's starts
+before the backend stops. Shared graphs remain running for other clients.
+
+`Runtime::stop()` drops every PCM of the session and returns the first error.
+It does not block later calls.
+
+Forced teardown and restart recovery still need separate handling. AGM
+dispatch, SUSPEND, property-scoped operations and live switching are not
+connected to these phases yet.
