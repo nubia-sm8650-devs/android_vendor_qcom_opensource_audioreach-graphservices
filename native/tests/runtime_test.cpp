@@ -30,6 +30,7 @@ struct pcm {
     int fds[2] = {-1, -1};
     snd_pcm_sync_ptr position{};
     int sync_error = 0;
+    int dup_error = 0;
 };
 
 struct mixer_ctl {
@@ -741,6 +742,46 @@ int main()
     close(notifications);
     notifications = -1;
     assert(ring == -1 && !ring_bytes && event == std::vector<uint8_t>{42});
+    snd_pcm_sync_ptr sync{};
+    sync.flags = SNDRV_PCM_SYNC_PTR_HWSYNC | SNDRV_PCM_SYNC_PTR_APPL |
+                 SNDRV_PCM_SYNC_PTR_AVAIL_MIN;
+    int pcm_fd = -1;
+    assert(runtime.sync_pcm(first, 2, sync) == -ENOENT);
+    assert(runtime.pcm_poll_fd(first, 2, pcm_fd) == -ENOENT);
+    assert(pcm_fd == -1);
+    a[0].handle->position.s.status.hw_ptr = 127;
+    a[0].handle->position.s.status.tstamp.tv_sec = 11;
+    a[0].handle->position.s.status.tstamp.tv_nsec = 12000;
+    b[0].handle->position.s.status.hw_ptr = 251;
+    assert(!runtime.sync_pcm(first, 1, sync));
+    assert(sync.s.status.state == SNDRV_PCM_STATE_SETUP);
+    assert(sync.s.status.hw_ptr == 127);
+    assert(sync.s.status.tstamp.tv_sec == 11 &&
+           sync.s.status.tstamp.tv_nsec == 12000);
+    assert(!runtime.sync_pcm(second, 2, sync));
+    assert(sync.s.status.hw_ptr == 251);
+    assert(!runtime.pcm_poll_fd(first, 1, pcm_fd));
+    pollfd ready{pcm_fd, POLLOUT, 0};
+    assert(poll(&ready, 1, 0) == 1 && (ready.revents & POLLOUT));
+    sync.flags = SNDRV_PCM_SYNC_PTR_APPL;
+    sync.c.control.avail_min = 48;
+    assert(!runtime.sync_pcm(first, 1, sync));
+    sync.flags = SNDRV_PCM_SYNC_PTR_AVAIL_MIN;
+    sync.c.control.appl_ptr = 96;
+    assert(!runtime.sync_pcm(first, 1, sync));
+    sync.flags = SNDRV_PCM_SYNC_PTR_APPL | SNDRV_PCM_SYNC_PTR_AVAIL_MIN;
+    sync.c.control.appl_ptr = sync.c.control.avail_min = 0;
+    assert(!runtime.sync_pcm(first, 1, sync));
+    assert(sync.c.control.appl_ptr == 96 && sync.c.control.avail_min == 48);
+    const auto before = sync;
+    a[0].handle->sync_error = EPIPE;
+    assert(runtime.sync_pcm(first, 1, sync) == -EPIPE);
+    assert(!std::memcmp(&sync, &before, sizeof(sync)));
+    a[0].handle->sync_error = 0;
+    a[0].handle->dup_error = ENOTTY;
+    assert(runtime.export_buffer(first, 1, ring, ring_bytes) == -ENOTTY);
+    assert(ring == -1 && !ring_bytes);
+    a[0].handle->dup_error = 0;
     assert(!runtime.export_buffer(first, 1, ring, ring_bytes));
     assert(ring >= 0 && ring_bytes == 240 * 4 * 2 * 2);
     assert(runtime.export_buffer(first, 1, ring, ring_bytes) == -EINVAL);
@@ -796,4 +837,7 @@ int main()
     assert(runtime.close(first) == -ENOENT);
     assert(runtime.export_buffer(first, 1, ring, ring_bytes) == -ENOENT);
     assert(runtime.read_event(first, 1, event) == -ENOENT);
+    assert(runtime.sync_pcm(first, 1, sync) == -ENOENT);
+    int rejected_fd = -1;
+    assert(runtime.pcm_poll_fd(first, 1, rejected_fd) == -ENOENT);
 }

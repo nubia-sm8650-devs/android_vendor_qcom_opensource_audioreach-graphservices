@@ -7,6 +7,8 @@
 
 #include <tinyalsa/asoundlib.h>
 
+struct snd_pcm_sync_ptr;
+
 namespace ar_topology
 {
 
@@ -45,6 +47,8 @@ public:
     int set_tagged_parameters(SessionId id, const Keys &gkv, uint32_t tag,
                                 const Keys &tkv);
     int export_buffer(SessionId id, uint32_t pcm, int &fd, uint32_t &bytes);
+    int sync_pcm(SessionId id, uint32_t pcm, struct snd_pcm_sync_ptr &sync);
+    int pcm_poll_fd(SessionId id, uint32_t pcm, int &fd);
     int register_events(SessionId id, uint32_t pcm, const void *data,
                           size_t size);
     int register_events(SessionId id, const void *data, size_t size);

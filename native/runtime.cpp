@@ -650,6 +650,54 @@ int Runtime::register_events(SessionId id, uint32_t pcm, const void *data,
     return register_pcm_events(impl->card, pcm, capture, data, size);
 }
 
+int Runtime::sync_pcm(SessionId id, uint32_t pcm, struct snd_pcm_sync_ptr &sync)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    bool capture;
+    int status = impl->frontend(id, pcm, capture);
+    if (status)
+        return status;
+
+    for (const auto &stream : impl->sessions.at(id).streams) {
+        if (stream.id != pcm)
+            continue;
+
+        auto output = sync;
+        status = result(pcm_ioctl(stream.handle, SNDRV_PCM_IOCTL_SYNC_PTR,
+                                  &output));
+        if (!status)
+            sync = output;
+
+        return status;
+    }
+
+    return -ENOENT;
+}
+
+int Runtime::pcm_poll_fd(SessionId id, uint32_t pcm, int &fd)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    bool capture;
+    int status = impl->frontend(id, pcm, capture);
+    if (status)
+        return status;
+
+    for (const auto &stream : impl->sessions.at(id).streams) {
+        if (stream.id != pcm)
+            continue;
+
+        int value = pcm_get_poll_fd(stream.handle);
+        if (value < 0)
+            return -ENODEV;
+
+        fd = value;
+
+        return 0;
+    }
+
+    return -ENOENT;
+}
+
 int Runtime::register_events(SessionId id, const void *data, size_t size)
 {
     if (!data || size < sizeof(uint32_t))
