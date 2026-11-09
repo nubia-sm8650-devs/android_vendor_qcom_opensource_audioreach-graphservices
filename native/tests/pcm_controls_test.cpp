@@ -14,6 +14,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <poll.h>
 #include <sound/asound.h>
 #include <apm_api.h>
 
@@ -29,6 +30,8 @@ struct Endpoint {
 
 static std::map<Identity, Endpoint> endpoints;
 static std::set<int> controls;
+static int notification_pipe[2] = {-1, -1};
+static bool subscribed;
 
 extern "C" int __real_open(const char *, int, ...);
 extern "C" int __real_close(int);
@@ -37,6 +40,13 @@ extern "C" int __wrap_open(const char *path, int flags, ...)
 {
     assert(std::string(path) == "/dev/snd/controlC7");
     assert(flags & O_CLOEXEC);
+    if (flags & O_NONBLOCK) {
+        assert(notification_pipe[0] < 0);
+        subscribed = false;
+        assert(!pipe2(notification_pipe, O_CLOEXEC | O_NONBLOCK));
+        controls.insert(notification_pipe[0]);
+        return notification_pipe[0];
+    }
     int original = __real_open("/dev/null", flags);
     assert(original >= 0);
     int fd = fcntl(original, F_DUPFD_CLOEXEC, 10);
@@ -49,6 +59,10 @@ extern "C" int __wrap_open(const char *path, int flags, ...)
 extern "C" int __wrap_close(int fd)
 {
     controls.erase(fd);
+    if (fd == notification_pipe[0]) {
+        __real_close(notification_pipe[1]);
+        notification_pipe[0] = notification_pipe[1] = -1;
+    }
     return __real_close(fd);
 }
 
@@ -59,6 +73,12 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
     va_start(args, command);
     void *data = va_arg(args, void *);
     va_end(args);
+
+    if (command == SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS) {
+        assert(fd == notification_pipe[0] && *static_cast<int *>(data) == 1);
+        subscribed = true;
+        return 0;
+    }
 
     if (command == SNDRV_CTL_IOCTL_ELEM_INFO) {
         auto &info = *static_cast<snd_ctl_elem_info *>(data);
@@ -143,5 +163,22 @@ int main()
     assert((output == Bytes{9, 8, 7}));
     assert(read_pcm_event(7, 9, false, output) == -EAGAIN);
     assert((output == Bytes{9, 8, 7}));
+    int notifications = -1;
+    assert(!subscribe_pcm_events(7, 9, false, notifications));
+    assert(fcntl(notifications, F_GETFD) & FD_CLOEXEC);
+    assert(fcntl(notifications, F_GETFL) & O_NONBLOCK);
+    pollfd poller{notifications, POLLIN, 0};
+    assert(!poll(&poller, 1, 0));
+    snd_ctl_event notice{};
+    notice.type = SNDRV_CTL_EVENT_ELEM;
+    notice.data.elem.mask = SNDRV_CTL_EVENT_MASK_VALUE;
+    if (subscribed)
+        assert(write(notification_pipe[1], &notice, sizeof(notice)) ==
+               ssize_t(sizeof(notice)));
+    assert(poll(&poller, 1, 0) == 1 && (poller.revents & POLLIN));
+    assert(!consume_pcm_notifications(notifications));
+    assert(!poll(&poller, 1, 0));
+    assert(!consume_pcm_notifications(notifications));
+    close(notifications);
     assert(controls.empty());
 }

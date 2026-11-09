@@ -73,6 +73,11 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
     void *data = va_arg(args, void *);
     va_end(args);
 
+    if (command == SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS) {
+        assert(*static_cast<int *>(data) == 1);
+        return 0;
+    }
+
     if (command == SNDRV_CTL_IOCTL_ELEM_INFO) {
         auto &info = *static_cast<snd_ctl_elem_info *>(data);
         assert(info.id.iface == SNDRV_CTL_ELEM_IFACE_PCM);
@@ -695,6 +700,13 @@ int main()
     assert(runtime.register_events(first, 1, registration,
         sizeof(registration)) == -ENOENT);
     assert(runtime.read_event(first, 2, event) == -ENOENT);
+    int notifications = -1;
+    assert(runtime.subscribe_events(first, 2, notifications) == -ENOENT);
+    assert(notifications == -1);
+    assert(!runtime.subscribe_events(first, 1, notifications));
+    assert(fcntl(notifications, F_GETFD) & FD_CLOEXEC);
+    close(notifications);
+    notifications = -1;
     assert(ring == -1 && !ring_bytes && event == std::vector<uint8_t>{42});
     assert(!runtime.export_buffer(first, 1, ring, ring_bytes));
     assert(ring >= 0 && ring_bytes == 240 * 4 * 2 * 2);

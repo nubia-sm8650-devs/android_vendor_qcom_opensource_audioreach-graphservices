@@ -48,6 +48,7 @@ public:
     int register_events(SessionId id, uint32_t pcm, const void *data,
                           size_t size);
     int read_event(SessionId id, uint32_t pcm, std::vector<uint8_t> &data);
+    int subscribe_events(SessionId id, uint32_t pcm, int &fd);
     int start(SessionId id);
     int stop(SessionId id);
     int open(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,

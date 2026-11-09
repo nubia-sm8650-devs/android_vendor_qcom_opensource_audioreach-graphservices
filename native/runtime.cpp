@@ -659,6 +659,15 @@ int Runtime::read_event(SessionId id, uint32_t pcm, std::vector<uint8_t> &data)
     return status ? status : read_pcm_event(impl->card, pcm, capture, data);
 }
 
+int Runtime::subscribe_events(SessionId id, uint32_t pcm, int &fd)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    bool capture;
+    int status = impl->frontend(id, pcm, capture);
+
+    return status ? status : subscribe_pcm_events(impl->card, pcm, capture, fd);
+}
+
 int Runtime::start(SessionId id)
 {
     std::lock_guard<std::mutex> lock(impl->mutex);

@@ -28,12 +28,12 @@ struct Control {
             close(fd);
     }
 
-    int open(unsigned card, uint32_t pcm, bool capture,
-               unsigned access)
+    int open(unsigned card, uint32_t pcm, bool capture, unsigned access,
+               bool nonblock = false)
     {
         char path[64];
         std::snprintf(path, sizeof(path), "/dev/snd/controlC%u", card);
-        fd = ::open(path, O_RDWR | O_CLOEXEC);
+        fd = ::open(path, O_RDWR | O_CLOEXEC | (nonblock ? O_NONBLOCK : 0));
         if (fd < 0)
             return -errno;
 
@@ -128,6 +128,46 @@ int read_pcm_event(unsigned card, uint32_t pcm, bool capture,
         return 0;
     } catch (const std::bad_alloc &) {
         return -ENOMEM;
+    }
+}
+
+int subscribe_pcm_events(unsigned card, uint32_t pcm, bool capture, int &fd)
+{
+    if (fd >= 0)
+        return -EINVAL;
+
+    Control control;
+    int status = control.open(card, pcm, capture,
+                                 SNDRV_CTL_ELEM_ACCESS_TLV_READ, true);
+    if (status)
+        return status;
+
+    int subscribe = 1;
+    if (ioctl(control.fd, SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS, &subscribe) < 0)
+        return -errno;
+
+    fd = control.fd;
+    control.fd = -1;
+
+    return 0;
+}
+
+int consume_pcm_notifications(int fd)
+{
+    snd_ctl_event events[16];
+
+    for (;;) {
+        ssize_t size = ::read(fd, events, sizeof(events));
+        if (size > 0)
+            return size % sizeof(events[0]) ? -EPROTO : 0;
+
+        if (size < 0 && errno == EINTR)
+            continue;
+
+        if (size < 0)
+            return errno == EAGAIN ? 0 : -errno;
+
+        return -ENODEV;
     }
 }
 
