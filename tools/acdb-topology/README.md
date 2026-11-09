@@ -161,3 +161,6 @@ Use `--bindings-output FILE` for a compact userspace file without graph
 blobs. It retains complete graph keys, frontends, memberships, reference
 and path controls, hardware gates and tuning associations. Unavailable or
 conflicting hardware still blocks both topology and binding output.
+Reference entries retain source and destination graph IDs and their
+optional path controls without native payload bytes, so userspace can
+compose fragments without importing absent peers.
