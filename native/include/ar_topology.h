@@ -18,6 +18,7 @@ struct Graph {
 };
 
 int read_defaults(uint32_t subgraph, std::vector<uint8_t> &data);
+int tune(struct mixer *mixer, const std::vector<Graph> &new_graphs);
 int prepare(struct pcm *pcm, struct mixer *mixer,
              const std::vector<Graph> &new_graphs);
 using Initialize = int (*)(void *) noexcept;

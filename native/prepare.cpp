@@ -35,6 +35,26 @@ int prepare(struct pcm *pcm, struct mixer *mixer,
     if (state.state != SNDRV_PCM_STATE_SETUP)
         return -EBADFD;
 
+    status = tune(mixer, new_graphs);
+    if (status)
+        return status;
+
+    if (initialize) {
+        status = initialize(context);
+        if (status)
+            return status;
+    }
+
+    status = pcm_prepare(pcm);
+
+    return status == -1 ? -errno : status;
+}
+
+int tune(struct mixer *mixer, const std::vector<Graph> &new_graphs)
+{
+    if (!mixer)
+        return -EINVAL;
+
     struct Pending {
         struct mixer_ctl *control;
         std::vector<uint8_t> bytes;
@@ -84,15 +104,7 @@ int prepare(struct pcm *pcm, struct mixer *mixer,
                 return status == -1 ? -errno : status;
         }
 
-        if (initialize) {
-            int status = initialize(context);
-            if (status)
-                return status;
-        }
-
-        int status = pcm_prepare(pcm);
-
-        return status == -1 ? -errno : status;
+        return 0;
     } catch (const std::bad_alloc &) {
         return -ENOMEM;
     }

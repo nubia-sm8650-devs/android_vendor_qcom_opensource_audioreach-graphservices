@@ -36,6 +36,8 @@ static std::set<struct pcm *> open_pcms;
 static bool initialization_seen;
 static bool prepared;
 static int rejected_pcm = -1;
+static int rejected_start = -1;
+static int rejected_stop = -1;
 
 extern "C" int32_t acdb_ioctl(uint32_t command, const void *input,
                               uint32_t, void *output, uint32_t)
@@ -101,8 +103,21 @@ extern "C" int pcm_prepare(struct pcm *handle)
     return 0;
 }
 
+extern "C" int pcm_start(struct pcm *handle)
+{
+    assert(handle->state == SNDRV_PCM_STATE_PREPARED);
+    if (int(handle->id) == rejected_start)
+        return -EIO;
+
+    handle->state = SNDRV_PCM_STATE_RUNNING;
+    return 0;
+}
+
 extern "C" int pcm_stop(struct pcm *handle)
 {
+    if (int(handle->id) == rejected_stop)
+        return -EIO;
+
     handle->state = SNDRV_PCM_STATE_SETUP;
     return 0;
 }
@@ -378,6 +393,51 @@ int main()
                          {configuration(1), configuration(4)}, first, a,
                          initialize, &init));
     assert(a.size() == 2);
+    rejected_start = 4;
+    assert(runtime.start(first) == -EIO);
+    assert(a[0].handle->state == SNDRV_PCM_STATE_RUNNING);
+    assert(a[1].handle->state == SNDRV_PCM_STATE_PREPARED);
+    rejected_start = -1;
+    assert(!runtime.start(first));
+    assert(a[1].handle->state == SNDRV_PCM_STATE_RUNNING);
+    assert(!runtime.stop(first));
     assert(!runtime.close(first));
+    assert(open_pcms.empty());
+
+    first = second = 0;
+    a.clear();
+    b.clear();
+    prepared = false;
+    assert(!runtime.acquire({{{10, 1}}}, {configuration(1)}, first, a));
+    assert(!runtime.acquire({{{10, 2}}}, {configuration(2)}, second, b));
+    assert(!prepared);
+    assert(a[0].handle->state == SNDRV_PCM_STATE_SETUP);
+    assert(b[0].handle->state == SNDRV_PCM_STATE_SETUP);
+    assert(runtime.start(first) == -EBADFD);
+    init.defaults = {1, 3};
+    assert(!runtime.prepare(first, initialize, &init));
+    assert(!mixer_ctl_set_array(&device, custom.data(), custom.size()));
+    init.defaults = {2};
+    assert(!runtime.prepare(second, initialize, &init));
+    assert(device.bytes == custom);
+    assert(!runtime.start(first));
+    assert(!runtime.start(second));
+    rejected_stop = 1;
+    assert(runtime.stop(first) == -EIO);
+    assert(a[0].handle->state == SNDRV_PCM_STATE_RUNNING);
+    assert(b[0].handle->state == SNDRV_PCM_STATE_RUNNING);
+    rejected_stop = -1;
+    assert(!runtime.stop(first));
+    assert(a[0].handle->state == SNDRV_PCM_STATE_SETUP);
+    assert(b[0].handle->state == SNDRV_PCM_STATE_RUNNING);
+    assert(controls.controls.at("hardware3").enabled);
+    assert(!runtime.prepare(first));
+    assert(!runtime.start(first));
+    assert(device.bytes == custom);
+    assert(!runtime.stop(first));
+    assert(!runtime.close(first));
+    assert(b[0].handle->state == SNDRV_PCM_STATE_RUNNING);
+    assert(!runtime.stop(second));
+    assert(!runtime.close(second));
     assert(open_pcms.empty());
 }

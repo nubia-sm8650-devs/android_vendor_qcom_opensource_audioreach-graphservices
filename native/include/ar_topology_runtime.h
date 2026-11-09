@@ -27,6 +27,12 @@ class Runtime {
 public:
     Runtime(unsigned card, struct mixer *mixer, const Bindings &bindings);
     ~Runtime();
+    int acquire(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,
+                SessionId &id, std::vector<Stream> &streams);
+    int prepare(SessionId id, Configure configure = nullptr,
+                 void *context = nullptr);
+    int start(SessionId id);
+    int stop(SessionId id);
     int open(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,
              SessionId &id, std::vector<Stream> &streams,
              Configure configure = nullptr, void *context = nullptr);

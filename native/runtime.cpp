@@ -5,6 +5,8 @@
 #include <mutex>
 #include <new>
 #include <stdexcept>
+#include <sys/ioctl.h>
+#include <sound/asound.h>
 
 namespace ar_topology
 {
@@ -14,6 +16,14 @@ namespace
 int result(int status)
 {
     return status == -1 ? -errno : status;
+}
+
+int state(const Stream &stream)
+{
+    snd_pcm_status status{};
+    int error = pcm_ioctl(stream.handle, SNDRV_PCM_IOCTL_STATUS, &status);
+
+    return error ? result(error) : int(status.state);
 }
 
 }
@@ -29,6 +39,7 @@ struct Runtime::Impl {
         std::vector<Stream> streams;
         std::vector<Control *> controls;
         size_t acquired = 0;
+        bool initialized = false;
     };
 
     unsigned card;
@@ -151,10 +162,9 @@ Runtime::~Runtime()
     }
 }
 
-int Runtime::open(const std::vector<Keys> &requests,
-                  const std::vector<Pcm> &pcms,
-                  SessionId &id, std::vector<Stream> &streams,
-                  Configure configure, void *context)
+int Runtime::acquire(const std::vector<Keys> &requests,
+                     const std::vector<Pcm> &pcms,
+                     SessionId &id, std::vector<Stream> &streams)
 {
     std::lock_guard<std::mutex> lock(impl->mutex);
 
@@ -281,25 +291,8 @@ int Runtime::open(const std::vector<Keys> &requests,
             }
         }
 
-        struct Initialization {
-            Configure configure;
-            void *context;
-            const std::vector<Stream> &streams;
-        } initialization{configure, context, active.streams};
-        auto initialize = [](void *opaque) noexcept {
-            auto &value = *static_cast<Initialization *>(opaque);
-
-            return value.configure ? value.configure(value.context,
-                                                      value.streams) : 0;
-        };
-
-        if (!status) {
-            status = prepare(active.streams[0].handle, impl->mixer, defaults,
-                              initialize, &initialization);
-
-            for (size_t i = 1; !status && i < active.streams.size(); i++)
-                status = prepare(active.streams[i].handle, impl->mixer, {});
-        }
+        if (!status)
+            status = tune(impl->mixer, defaults);
 
         if (status) {
             impl->release(id);
@@ -317,6 +310,118 @@ int Runtime::open(const std::vector<Keys> &requests,
     } catch (const std::bad_alloc &) {
         return -ENOMEM;
     }
+}
+
+int Runtime::prepare(SessionId id, Configure configure, void *context)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    auto found = impl->sessions.find(id);
+    if (found == impl->sessions.end())
+        return -ENOENT;
+
+    auto &session = found->second;
+    for (const auto &stream : session.streams) {
+        int value = state(stream);
+        if (value < 0)
+            return value;
+
+        if (value != SNDRV_PCM_STATE_SETUP &&
+            value != SNDRV_PCM_STATE_PREPARED)
+            return -EBADFD;
+    }
+
+    if (!session.initialized) {
+        int status = configure ? configure(context, session.streams) : 0;
+        if (status)
+            return status;
+
+        session.initialized = true;
+    }
+
+    for (const auto &stream : session.streams) {
+        int value = state(stream);
+        if (value < 0)
+            return value;
+
+        if (value == SNDRV_PCM_STATE_PREPARED)
+            continue;
+
+        int status = ar_topology::prepare(stream.handle, impl->mixer, {});
+        if (status)
+            return status;
+    }
+
+    return 0;
+}
+
+int Runtime::start(SessionId id)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    auto found = impl->sessions.find(id);
+    if (found == impl->sessions.end())
+        return -ENOENT;
+
+    for (const auto &stream : found->second.streams) {
+        int value = state(stream);
+        if (value < 0)
+            return value;
+
+        if (value != SNDRV_PCM_STATE_PREPARED &&
+            value != SNDRV_PCM_STATE_RUNNING)
+            return -EBADFD;
+    }
+
+    for (const auto &stream : found->second.streams) {
+        int value = state(stream);
+        if (value < 0)
+            return value;
+
+        if (value == SNDRV_PCM_STATE_RUNNING)
+            continue;
+
+        int status = result(pcm_start(stream.handle));
+        if (status)
+            return status;
+    }
+
+    return 0;
+}
+
+int Runtime::stop(SessionId id)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    auto found = impl->sessions.find(id);
+    if (found == impl->sessions.end())
+        return -ENOENT;
+
+    int first = 0;
+
+    for (const auto &stream : found->second.streams) {
+        int status = result(pcm_stop(stream.handle));
+        if (status && !first)
+            first = status;
+    }
+
+    return first;
+}
+
+int Runtime::open(const std::vector<Keys> &requests,
+                  const std::vector<Pcm> &pcms,
+                  SessionId &id, std::vector<Stream> &streams,
+                  Configure configure, void *context)
+{
+    int status = acquire(requests, pcms, id, streams);
+    if (status)
+        return status;
+
+    status = prepare(id, configure, context);
+    if (status) {
+        streams.clear();
+        close(id);
+        id = 0;
+    }
+
+    return status;
 }
 
 int Runtime::close(SessionId id)
