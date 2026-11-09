@@ -284,11 +284,24 @@ int main(int argc, char **argv)
             bindings["dsp_execution_verified"] = false;
             bindings["frontends"] = result["corpus"]["frontends"];
             bindings["selections"] = result["corpus"]["selections"];
+            bindings["references"] = Json::Value(Json::arrayValue);
             bindings["hardware_gates"] = Json::Value(Json::arrayValue);
 
             for (const auto &subgraph : result["corpus"]["subgraphs"]) {
                 for (const auto &gate : subgraph["hardware_gates"])
                     bindings["hardware_gates"].append(gate);
+            }
+
+            for (const auto &reference : result["corpus"]["references"]) {
+                Json::Value value;
+
+                for (const char *field : {"name", "control", "source_graph",
+                                          "destination_graph", "path_control"}) {
+                    if (reference.isMember(field))
+                        value[field] = reference[field];
+                }
+
+                bindings["references"].append(value);
             }
 
             for (Json::ArrayIndex i = 0; i < bindings["selections"].size(); i++)

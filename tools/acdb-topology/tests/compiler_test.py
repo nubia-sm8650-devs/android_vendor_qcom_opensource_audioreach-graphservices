@@ -601,6 +601,9 @@ class CompilerTest(unittest.TestCase):
                 exported = json.loads(manifest.read_text())
                 self.assertEqual(exported["frontends"], corpus["frontends"])
                 self.assertFalse(exported["dsp_execution_verified"])
+                self.assertEqual(exported["references"], [
+                    {key: value for key, value in reference.items()
+                     if key != "native"} for reference in corpus["references"]])
                 for selection, original in zip(exported["selections"], sources):
                     self.assertEqual(selection["graph_keys"],
                                      original["graph_keys"])
