@@ -36,8 +36,9 @@ Construct `ar_topology::Bindings` from the compiler's compact JSON output,
 then construct one `ar_topology::Runtime` per card with its mixer and
 bindings. Keep both objects alive for the runtime's lifetime and use the
 runtime as the sole writer of its reference, path and hardware controls.
-Compact files must include reference ownership metadata. Older files
-without it are rejected rather than inferred from control names.
+Compact files must include reference ownership metadata and module instance
+IDs in every `tuning` entry's `modules` array. Regenerate older files that
+lack this metadata; ownership is not inferred from control names.
 
 `Bindings::select()` composes complete graph-key vectors before checking
 directional reachability. Device fragments need not own a frontend alone.
@@ -95,6 +96,36 @@ before the backend stops. Shared graphs remain running for other clients.
 `Runtime::stop()` drops every PCM of the session and returns the first error.
 It does not block later calls.
 
-Forced teardown and restart recovery still need separate handling. AGM
-dispatch, SUSPEND, property-scoped operations and live switching are not
-connected to these phases yet.
+Forced teardown and restart recovery still need separate handling. The AGM
+parameter adapter uses these preparation phases without selecting a native
+backend. SUSPEND, property-scoped operations and live switching remain
+unconnected.
+
+## Initialization parameters
+
+After `Runtime::acquire()`, use `Runtime::prepare_parameters()` to receive a
+borrowed `Parameters&` in the initialization callback. Defaults have already
+been applied and no PCM PREPARE runs until the callback succeeds. Use the
+writer directly inside the callback, not the owner-locked runtime setters.
+Do not retain it or reenter the runtime. Choose either this callback or the
+original `Runtime::prepare()` callback for the session's first preparation.
+
+`Parameters::set()` routes native module parameter records through the
+selected graphs' SET controls. It validates the entire batch and preflights
+all required controls before writing. Contiguous records for one graph may
+share a write, but records are never reordered across graphs. The optional
+`applied` byte cursor advances only after an acknowledged write. Retain the
+same bytes and cursor when retrying initialization after partial failure.
+Earlier acknowledged writes are not rolled back.
+
+`Parameters::resolve_tag()` uses `ACDB_CMD_GET_MODULE_TAG_DATA`. A nonempty
+GKV must exactly match an opened selection; an empty GKV scopes the request
+to every current member. Returned records must target modules in that
+scope. Resolution and SET are separate so an initialization queue can retain
+resolved data across a failed SET instead of querying it again.
+
+Outside the callback, use `Runtime::set_parameters()` and
+`Runtime::set_tagged_parameters()` for synchronous updates under the owner
+lock. A failed batch may leave an acknowledged prefix applied. These APIs
+do not register persistent data or infer ownership for service-target IIDs
+3 and 4, which return `-EOPNOTSUPP`.
