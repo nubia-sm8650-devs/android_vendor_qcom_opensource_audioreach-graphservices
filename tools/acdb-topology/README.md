@@ -121,7 +121,11 @@ entry.
 
 ```json
 {"version": 1, "widgets": [
-  {"dai": 16, "direction": "playback", "name": "Primary MI2S Playback"}
+  {"dai": 16, "direction": "playback", "name": "Primary MI2S Playback",
+   "media_controls": {"rate": "Speaker Playback Rate",
+                      "format": "Speaker Playback Format",
+                      "channels": "Speaker Playback Channels",
+                      "data_format": "PRI_MI2S_RX Data Format"}}
 ]}
 ```
 
@@ -129,6 +133,18 @@ Every selected physical endpoint needs a matching entry. Graph IDs must
 not overlap any backend DAI ID in the supplied board. Hardware switches
 gate routing without taking formatting or state transitions from the
 backend callbacks.
+
+The optional `media_controls` object supplies exact enum control names for
+managed userspace media configuration. It retains the matching native DT
+backend's provider, port, path and link name in the hardware gate's `backend`
+binding. If multiple available links match the port and direction, add
+`backend` to the widget entry with the desired DT path from the board report.
+Repeated links remain separate; no link is chosen by occurrence order.
+
+Rate/Format/Channels names and Data Format names need not share a prefix.
+Use the controls exposed by the target card. A backend with codec-owned
+channel maps may omit `channels`, but the initial managed runtime rejects
+that configuration until codec-map integration is available.
 
 Add `--pcm-bindings FILE` to declare explicit frontend roots. Take native
 subgraph IDs from the corpus report and choose PCM numbers for the client.

@@ -52,8 +52,9 @@ and an empty stream vector. The runtime reserves frontend roots, shares
 controls, opens all PCMs, applies defaults only to newly acquired graphs,
 then prepares the PCMs. Its optional configuration callback sees all open
 PCMs in SETUP after default tuning and before any PREPARE. Callbacks must
-not reenter the runtime. Configure compatible backend media formats before
-opening a session; the runtime does not choose or arbitrate those formats.
+not reenter the runtime. This API expects externally configured
+backend formats. Use managed acquisition below to reserve and program explicit
+formats through qualified backend bindings.
 
 On success, the stream handles are borrowed for data operations until
 `Runtime::close()`. Do not close them separately. Closing one session keeps
@@ -129,6 +130,28 @@ Outside the callback, use `Runtime::set_parameters()` and
 lock. A failed batch may leave an acknowledged prefix applied. These APIs
 do not register persistent data or infer ownership for service-target IIDs
 3 and 4, which return `-EOPNOTSUPP`.
+
+## Managed backend media
+
+Use the `Runtime::acquire()` overload accepting `HardwareConfig` records to
+configure hardware before routes activate or frontend hardware setup runs.
+Each record names a complete opened GKV selection and supplies its rate,
+channel count, native data-format identity and ALSA sample-format name.
+The selection must identify one physical port, and every selected hardware
+gate must have a qualified backend binding and a supplied configuration.
+No frontend format, device alias or topology data-format default is inferred.
+
+The runtime preflights all enum values before writing, shares compatible
+physical-port configurations and rejects conflicting requests until every
+owner closes. Stopped sessions retain ownership. Managed and
+externally configured hardware sessions cannot coexist on the same runtime.
+The caller remains responsible for supplying the device's intended format;
+this API does not discover devices or implement live reconfiguration.
+
+Control writes stage backend configuration without sending DSP commands.
+An error prevents PCM admission, but already staged enum writes are not
+rolled back. A later admission preflights the controls again. Codec-map-only
+channel configuration, including SLIM, remains unsupported by this overload.
 
 ## PCM events and data buffer descriptor
 
