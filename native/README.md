@@ -173,8 +173,16 @@ Use `Runtime::register_events()` with one native module-event registration
 record and the owning PCM ID. The module must belong to the opened session.
 Use `Runtime::read_event()` to consume one queued native module-event payload.
 An empty queue returns `-EAGAIN`; queue overflow returns `-EOVERFLOW` without
-replacing the caller's output. These operations do not install a notification
-listener or translate events into AGM callbacks.
+replacing the caller's output.
+
+`Runtime::subscribe_events()` returns an owned nonblocking CLOEXEC ALSA
+control descriptor after checking frontend ownership. Watch it for `POLLIN`
+and drain module payloads with `Runtime::read_event()` until `-EAGAIN`, also
+draining once before the first wait. Card-wide notifications may be unrelated
+to this frontend. Use `consume_pcm_notifications()` to consume notification
+records without replacing the queued module payload read. A lost-event error
+does not discard the remaining module queue. Close the subscription before
+closing its session. These APIs do not start a listener or invoke callbacks.
 
 `Runtime::export_buffer()` returns an owned CLOEXEC descriptor that only maps
 the data buffer of an open PCM, from `SNDRV_PCM_IOCTL_ANONYMOUS_DUP`, and the
@@ -183,7 +191,7 @@ when no longer needed. The descriptor and every mapping made through it keep
 the kernel stream open, so the PCM stays busy after session close until they
 are released.
 
-All three operations require a PCM in the session's bindings, derive its
+These operations require a PCM in the session's bindings, derive its
 direction from those bindings and reject pending STOP/close cleanup. They
 address ALSA controls by full PCM identity, not by name or numeric-ID cache.
 The lower-level functions in `ar_topology_pcm_controls.h` provide the same
