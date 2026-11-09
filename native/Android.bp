@@ -5,8 +5,10 @@ cc_library_shared {
         "bindings.cpp",
         "defaults.cpp",
         "prepare.cpp",
+        "runtime.cpp",
     ],
     export_include_dirs: ["include"],
+    export_shared_lib_headers: ["libtinyalsa"],
     cpp_std: "c++17",
     cppflags: ["-fexceptions"],
     cflags: ["-Wall", "-Wextra", "-Werror"],
@@ -16,6 +18,34 @@ cc_library_shared {
         "libar-acdb",
         "libtinyalsa",
     ],
+}
+
+cc_test_host {
+    name: "ar-topology-runtime-test",
+    srcs: [
+        "bindings.cpp",
+        "defaults.cpp",
+        "prepare.cpp",
+        "runtime.cpp",
+        "tests/runtime_test.cpp",
+    ],
+    local_include_dirs: ["include"],
+    include_dirs: [
+        "hardware/qcom-caf/sm8650/audio/graphservices/acdb/api",
+        "hardware/qcom-caf/sm8650/audio/graphservices/ar_osal/api",
+        "external/tinyalsa/include",
+        "bionic/libc/kernel/uapi",
+    ],
+    shared_libs: ["libjsoncpp"],
+    cpp_std: "c++17",
+    cppflags: ["-fexceptions"],
+    cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],
+    gtest: false,
+    target: {
+        darwin: {
+            enabled: false,
+        },
+    },
 }
 
 cc_test_host {
