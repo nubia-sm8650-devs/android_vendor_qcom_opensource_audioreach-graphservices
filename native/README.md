@@ -192,7 +192,22 @@ the data buffer of an open PCM, from `SNDRV_PCM_IOCTL_ANONYMOUS_DUP`, and the
 buffer size in bytes. Initialize the descriptor output to `-1` and close it
 when no longer needed. The descriptor and every mapping made through it keep
 the kernel stream open, so the PCM stays busy after session close until they
-are released.
+are released. Stream position comes from `Runtime::sync_pcm()`.
+
+`Runtime::sync_pcm()` passes ALSA `snd_pcm_sync_ptr` flags and application
+pointer/availability controls to the owned PCM. Use `SNDRV_PCM_SYNC_PTR_HWSYNC`
+for a hardware-position refresh, and the ALSA APPL/AVAIL_MIN flags to choose
+which controls to read rather than update. Successful replies contain the
+kernel PCM state, hardware pointer and timestamp. Inspect that state for XRUN
+or suspension. An ioctl error is returned without replacing the caller's
+snapshot. No automatic prepare, start or restart occurs.
+
+`Runtime::pcm_poll_fd()` returns the borrowed PCM descriptor for data readiness,
+not the card-wide module subscription. Poll outside runtime/control locks and
+serialize use with session close. Do not close the borrowed descriptor.
+`PCM_NOIRQ` disables period wakeups; returning its descriptor does not create
+a wakeup source for that mode. These local APIs neither export DSP position
+memory nor complete an IPC/application MMAP integration.
 
 These operations require a PCM in the session's bindings, derive its
 direction from those bindings and reject pending STOP/close cleanup. They
