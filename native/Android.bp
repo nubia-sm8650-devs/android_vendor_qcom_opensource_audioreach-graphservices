@@ -4,6 +4,7 @@ filegroup {
         "bindings.cpp",
         "defaults.cpp",
         "parameters.cpp",
+        "pcm_controls.cpp",
         "prepare.cpp",
         "runtime.cpp",
     ],
@@ -18,7 +19,7 @@ cc_library_shared {
     cpp_std: "c++17",
     cppflags: ["-fexceptions"],
     cflags: ["-Wall", "-Wextra", "-Werror"],
-    header_libs: ["libarosal_headers"],
+    header_libs: ["libarosal_headers", "libspf-headers"],
     shared_libs: [
         "libjsoncpp",
         "libar-acdb",
@@ -36,6 +37,9 @@ cc_test_host {
     include_dirs: [
         "hardware/qcom-caf/sm8650/audio/graphservices/acdb/api",
         "hardware/qcom-caf/sm8650/audio/graphservices/ar_osal/api",
+        "hardware/qcom-caf/sm8650/audio/graphservices/spf/api",
+        "hardware/qcom-caf/sm8650/audio/graphservices/spf/api/apm",
+        "hardware/qcom-caf/sm8650/audio/graphservices/spf/api/ar_utils",
         "external/tinyalsa/include",
         "bionic/libc/kernel/uapi",
     ],
@@ -43,6 +47,29 @@ cc_test_host {
     cpp_std: "c++17",
     cppflags: ["-fexceptions"],
     cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],
+    gtest: false,
+    target: {
+        darwin: {
+            enabled: false,
+        },
+    },
+}
+
+cc_test_host {
+    name: "ar-topology-pcm-controls-test",
+    srcs: ["pcm_controls.cpp", "tests/pcm_controls_test.cpp"],
+    local_include_dirs: ["include"],
+    include_dirs: [
+        "hardware/qcom-caf/sm8650/audio/graphservices/ar_osal/api",
+        "hardware/qcom-caf/sm8650/audio/graphservices/spf/api",
+        "hardware/qcom-caf/sm8650/audio/graphservices/spf/api/apm",
+        "hardware/qcom-caf/sm8650/audio/graphservices/spf/api/ar_utils",
+        "bionic/libc/kernel/uapi",
+    ],
+    cpp_std: "c++17",
+    cppflags: ["-fexceptions"],
+    cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],
+    ldflags: ["-Wl,--wrap=open,--wrap=close,--wrap=ioctl"],
     gtest: false,
     target: {
         darwin: {
