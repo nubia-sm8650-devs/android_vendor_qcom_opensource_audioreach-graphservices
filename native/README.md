@@ -202,12 +202,16 @@ kernel PCM state, hardware pointer and timestamp. Inspect that state for XRUN
 or suspension. An ioctl error is returned without replacing the caller's
 snapshot. No automatic prepare, start or restart occurs.
 
+`Runtime::start()` issues ALSA START without Tinyalsa's cached MMAP control
+commit, preserving application pointers committed through `Runtime::sync_pcm()`.
+
 `Runtime::pcm_poll_fd()` returns the borrowed PCM descriptor for data readiness,
 not the card-wide module subscription. Poll outside runtime/control locks and
 serialize use with session close. Do not close the borrowed descriptor.
 `PCM_NOIRQ` disables period wakeups; returning its descriptor does not create
-a wakeup source for that mode. These local APIs neither export DSP position
-memory nor complete an IPC/application MMAP integration.
+a wakeup source for that mode. These local APIs do not export DSP position
+memory. AGM and PAL provide separate NOIRQ MMAP integration; public backend
+selection and device qualification remain incomplete.
 
 These operations require a PCM in the session's bindings, derive its
 direction from those bindings and reject pending STOP/close cleanup. They
