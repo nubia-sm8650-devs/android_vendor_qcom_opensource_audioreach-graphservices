@@ -5,12 +5,20 @@
 #include <cerrno>
 #include <cstdarg>
 #include <cstring>
+#include <fcntl.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
 #include <acdb.h>
 #include <ar_osal_error.h>
 #include <json/json.h>
 #include <sound/asound.h>
 #include <sound/snd_ar_tokens.h>
+#include <apm_api.h>
+
+#ifndef SNDRV_PCM_IOCTL_ANONYMOUS_DUP
+#define SNDRV_PCM_ANON_DUP_BUFFER 1
+#define SNDRV_PCM_IOCTL_ANONYMOUS_DUP _IOW('A', 0x05, int)
+#endif
 
 using Bytes = std::vector<uint8_t>;
 
@@ -40,6 +48,57 @@ static int rejected_start = -1;
 static int rejected_stop = -1;
 static int rejected_open = -1;
 static pcm bad_pcm{UINT32_MAX};
+static int control_fd = -1;
+
+extern "C" int __real_open(const char *, int, ...);
+
+extern "C" int __wrap_open(const char *path, int flags, ...)
+{
+    assert(!std::strcmp(path, "/dev/snd/controlC0"));
+    control_fd = __real_open("/dev/null", flags);
+    assert(control_fd >= 0);
+    return control_fd;
+}
+
+extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
+{
+    assert(fd == control_fd);
+    va_list args;
+    va_start(args, command);
+    void *data = va_arg(args, void *);
+    va_end(args);
+
+    if (command == SNDRV_CTL_IOCTL_ELEM_INFO) {
+        auto &info = *static_cast<snd_ctl_elem_info *>(data);
+        assert(info.id.iface == SNDRV_CTL_ELEM_IFACE_PCM);
+        bool found = false;
+        for (auto *handle : open_pcms)
+            found |= handle->id == info.id.device;
+        if (!found) {
+            errno = ENOENT;
+            return -1;
+        }
+
+        info.id.numid = info.id.device;
+        info.type = SNDRV_CTL_ELEM_TYPE_BYTES;
+        info.access = SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE;
+        info.count = 65536;
+        return 0;
+    }
+
+    auto &tlv = *static_cast<snd_ctl_tlv *>(data);
+    if (command == SNDRV_CTL_IOCTL_TLV_WRITE) {
+        assert(tlv.tlv[0] == APM_CMD_REGISTER_MODULE_EVENTS);
+    } else {
+        assert(command == SNDRV_CTL_IOCTL_TLV_READ);
+        uint32_t event[] = {0x4000 + tlv.numid, 0x08001000, 0};
+        tlv.tlv[0] = APM_EVENT_MODULE_TO_CLIENT;
+        tlv.tlv[1] = sizeof(event);
+        std::memcpy(tlv.tlv + 2, event, sizeof(event));
+    }
+
+    return 0;
+}
 
 extern "C" int32_t acdb_ioctl(uint32_t command, const void *input,
                               uint32_t, void *output, uint32_t)
@@ -428,6 +487,30 @@ int main()
     assert(!prepared);
     assert(a[0].handle->state == SNDRV_PCM_STATE_SETUP);
     assert(b[0].handle->state == SNDRV_PCM_STATE_SETUP);
+    int ring = -1;
+    uint32_t ring_bytes = 0;
+    std::vector<uint8_t> event{42};
+    uint32_t registration[] = {0x4002, 0x08001000, 1, 0, 0, 0};
+    assert(runtime.export_buffer(first, 2, ring, ring_bytes) == -ENOENT);
+    assert(runtime.register_events(first, 2, registration,
+        sizeof(registration)) == -ENOENT);
+    assert(runtime.register_events(first, 1, registration,
+        sizeof(registration)) == -ENOENT);
+    assert(runtime.read_event(first, 2, event) == -ENOENT);
+    assert(ring == -1 && !ring_bytes && event == std::vector<uint8_t>{42});
+    assert(!runtime.export_buffer(first, 1, ring, ring_bytes));
+    assert(ring >= 0 && ring_bytes == 240 * 4 * 2 * 2);
+    assert(runtime.export_buffer(first, 1, ring, ring_bytes) == -EINVAL);
+    close(ring);
+    ring = -1;
+    registration[0] = 0x4001;
+    assert(!runtime.register_events(first, 1, registration,
+        sizeof(registration)));
+    assert(!runtime.read_event(first, 1, event));
+    uint32_t module = 0;
+    assert(event.size() == 3 * sizeof(uint32_t));
+    std::memcpy(&module, event.data(), sizeof(module));
+    assert(module == 0x4001);
     assert(runtime.start(first) == -EBADFD);
     init.defaults = {1, 3};
     assert(!runtime.prepare(first, initialize, &init));
@@ -466,4 +549,8 @@ int main()
     assert(runtime.close(first) == -EIO);
     rejected_stop = -1;
     assert(open_pcms.empty());
+    assert(!controls.controls.at("hardware3").enabled);
+    assert(runtime.close(first) == -ENOENT);
+    assert(runtime.export_buffer(first, 1, ring, ring_bytes) == -ENOENT);
+    assert(runtime.read_event(first, 1, event) == -ENOENT);
 }

@@ -1,12 +1,19 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "ar_topology_runtime.h"
+#include "ar_topology_pcm_controls.h"
 
 #include <cerrno>
+#include <cstring>
 #include <mutex>
 #include <new>
 #include <stdexcept>
 #include <sys/ioctl.h>
 #include <sound/asound.h>
+
+#ifndef SNDRV_PCM_IOCTL_ANONYMOUS_DUP
+#define SNDRV_PCM_ANON_DUP_BUFFER 1
+#define SNDRV_PCM_IOCTL_ANONYMOUS_DUP _IOW('A', 0x05, int)
+#endif
 
 namespace ar_topology
 {
@@ -53,6 +60,24 @@ struct Runtime::Impl {
     Impl(unsigned card, struct mixer *mixer, const Bindings &bindings)
         : card(card), mixer(mixer), bindings(bindings)
     {
+    }
+
+    int frontend(SessionId id, uint32_t pcm, bool &capture) const
+    {
+        auto found = sessions.find(id);
+        if (found == sessions.end())
+            return -ENOENT;
+
+        for (const auto &frontend : found->second.plan.frontends) {
+            if (frontend.pcm_id != pcm)
+                continue;
+
+            capture = frontend.capture;
+
+            return 0;
+        }
+
+        return -ENOENT;
     }
 
     int release(SessionId id)
@@ -397,6 +422,66 @@ int Runtime::set_tagged_parameters(SessionId id, const Keys &gkv, uint32_t tag,
         return status;
 
     return writer.set(data.data(), data.size());
+}
+
+int Runtime::export_buffer(SessionId id, uint32_t pcm, int &fd, uint32_t &bytes)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    bool capture;
+    int status = impl->frontend(id, pcm, capture);
+    if (status)
+        return status;
+
+    if (fd >= 0)
+        return -EINVAL;
+
+    for (const auto &stream : impl->sessions.at(id).streams) {
+        if (stream.id != pcm)
+            continue;
+
+        int mode = SNDRV_PCM_ANON_DUP_BUFFER;
+        status = result(pcm_ioctl(stream.handle,
+                                  SNDRV_PCM_IOCTL_ANONYMOUS_DUP, &mode));
+        if (status < 0)
+            return status;
+
+        fd = status;
+        bytes = pcm_frames_to_bytes(stream.handle,
+                                    pcm_get_buffer_size(stream.handle));
+
+        return 0;
+    }
+
+    return -ENOENT;
+}
+
+int Runtime::register_events(SessionId id, uint32_t pcm, const void *data,
+                              size_t size)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    bool capture;
+    int status = impl->frontend(id, pcm, capture);
+    if (status)
+        return status;
+
+    if (!data || size < sizeof(uint32_t))
+        return -EINVAL;
+
+    uint32_t instance;
+    std::memcpy(&instance, data, sizeof(instance));
+    if (!impl->sessions.at(id).plan.modules.count(instance))
+        return -ENOENT;
+
+    return register_pcm_events(impl->card, pcm, capture, data, size);
+}
+
+int Runtime::read_event(SessionId id, uint32_t pcm, std::vector<uint8_t> &data)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    bool capture;
+    int status = impl->frontend(id, pcm, capture);
+
+    return status ? status : read_pcm_event(impl->card, pcm, capture, data);
 }
 
 int Runtime::start(SessionId id)

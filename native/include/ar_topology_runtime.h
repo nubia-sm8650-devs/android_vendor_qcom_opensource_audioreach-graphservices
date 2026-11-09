@@ -38,7 +38,11 @@ public:
     int set_parameters(SessionId id, const void *data, size_t size,
                         size_t *applied = nullptr);
     int set_tagged_parameters(SessionId id, const Keys &gkv, uint32_t tag,
-                               const Keys &tkv);
+                                const Keys &tkv);
+    int export_buffer(SessionId id, uint32_t pcm, int &fd, uint32_t &bytes);
+    int register_events(SessionId id, uint32_t pcm, const void *data,
+                          size_t size);
+    int read_event(SessionId id, uint32_t pcm, std::vector<uint8_t> &data);
     int start(SessionId id);
     int stop(SessionId id);
     int open(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,

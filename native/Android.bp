@@ -47,6 +47,7 @@ cc_test_host {
     cpp_std: "c++17",
     cppflags: ["-fexceptions"],
     cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],
+    ldflags: ["-Wl,--wrap=open,--wrap=ioctl"],
     gtest: false,
     target: {
         darwin: {
