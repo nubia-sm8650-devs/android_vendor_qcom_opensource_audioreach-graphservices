@@ -36,6 +36,8 @@ struct Backend {
     std::string path, name;
     bool capture;
     std::map<std::string, std::string> controls;
+    std::string aif_name;
+    uint32_t aif_id = 0;
 };
 
 struct Plan {
@@ -53,6 +55,7 @@ public:
     ~Bindings();
     int select(const std::vector<Keys> &requests, Plan &plan) const;
     const std::map<std::string, Reference> &references() const;
+    const std::map<uint32_t, Backend> &aifs() const;
 
 private:
     struct Impl;

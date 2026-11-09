@@ -1338,19 +1338,29 @@ class CompilerTest(unittest.TestCase):
         hardware_widgets = self.root / "hardware-widgets.json"
 
         for family, direction, dai, port, module, context in (
+                ("SLIM", "capture", 15, "Slimbus6 Capture", 0x4001,
+                 ["--device", "BTIN"]),
                 ("MI2S", "playback", 16, "Primary MI2S Playback", 0x4002,
                  ["--device", "OUT"]),
                 ("CODEC_DMA", "capture", 120, "TX_CODEC_DMA_TX_3 Capture",
                  0x4001, qualified)):
             with self.subTest(hardware_gate=direction):
                 widget = {"dai": dai, "direction": direction, "name": port}
-                link_name = "Speaker Playback" if dai == 16 else "WCD Capture"
-                cpu_name = "PRI_MI2S_RX" if dai == 16 else "TX_CODEC_DMA_TX_3"
+                link_name = {15: "BT Capture", 16: "Speaker Playback",
+                             120: "WCD Capture"}[dai]
+                cpu_name = {15: "SLIMBUS_6_TX", 16: "PRI_MI2S_RX",
+                            120: "TX_CODEC_DMA_TX_3"}[dai]
                 widget["media_controls"] = {
                     "rate": link_name + " Rate",
                     "format": link_name + " Format",
                     "channels": link_name + " Channels",
                     "data_format": cpu_name + " Data Format"}
+                widget["aif"] = {"id": {16: 0, 120: 1, 15: 2}[dai],
+                                 "name": cpu_name}
+                if family == "SLIM":
+                    del widget["media_controls"]["channels"]
+                    widget["media_controls"]["channel_map"] = (
+                        link_name + " Channel Map")
                 hardware_widgets.write_text(json.dumps({
                     "version": 1, "widgets": [widget]}))
                 completed = self.run_exports([hardware_fixture(family)],
@@ -1373,6 +1383,7 @@ class CompilerTest(unittest.TestCase):
                 self.assertEqual(gate["backend"]["name"], link_name)
                 self.assertEqual(gate["backend"]["controls"],
                                  widget["media_controls"])
+                self.assertEqual(gate["backend"]["aif"], widget["aif"])
                 self.assertEqual(decoded[marker], [{1: 256}])
                 control = controls[marker]
                 self.assertEqual(gate["control"], marker + " " + control["name"])
@@ -1385,6 +1396,18 @@ class CompilerTest(unittest.TestCase):
                             (marker, control["name"], port),
                             (f"m{module}", "", marker))
                 self.assertEqual(set(dapm_routes(binary)), set(expected))
+
+                widget["aif"]["group"] = "unsupported"
+                hardware_widgets.write_text(json.dumps({
+                    "version": 1, "widgets": [widget]}))
+                self.output.write_text("retain")
+                completed = self.run_exports([hardware_fixture(family)],
+                    *options, *context, "--corpus", "--graph-id", "256",
+                    "--hardware-widgets", str(hardware_widgets),
+                    "--output", str(self.output))
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertEqual(self.output.read_text(), "retain")
+                del widget["aif"]["group"]
 
                 widget["backend"] = "/sound/absent"
                 hardware_widgets.write_text(json.dumps({

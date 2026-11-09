@@ -16,6 +16,8 @@ Json::Value read_hardware_widgets(const Json::Value &input,
 
     Json::Value result(Json::objectValue);
     std::set<std::string> names;
+    std::set<uint32_t> aif_ids;
+    std::set<std::string> aif_names;
     result["reserved_dais"] = Json::Value(Json::arrayValue);
 
     for (const auto &link : board["links"])
@@ -50,6 +52,8 @@ Json::Value read_hardware_widgets(const Json::Value &input,
         }
 
         result["widgets"][id][direction] = name;
+        if (widget.isMember("aif") && !widget.isMember("media_controls"))
+            throw std::runtime_error("Native AIF lacks backend media controls");
 
         if (widget.isMember("media_controls")) {
             const auto &controls = widget["media_controls"];
@@ -64,10 +68,14 @@ Json::Value read_hardware_widgets(const Json::Value &input,
             for (const auto &key : controls.getMemberNames()) {
                 const auto &value = controls[key];
                 if ((key != "rate" && key != "format" && key != "channels" &&
-                     key != "data_format") || !value.isString() ||
+                     key != "data_format" && key != "channel_map") ||
+                    !value.isString() ||
                     value.asString().empty() || value.asString().size() >= 44)
                     throw std::runtime_error("Invalid backend media control");
             }
+
+            if (controls.isMember("channels") && controls.isMember("channel_map"))
+                throw std::runtime_error("Conflicting backend channel sources");
 
             Json::Value matches(Json::arrayValue);
 
@@ -84,6 +92,25 @@ Json::Value read_hardware_widgets(const Json::Value &input,
 
             auto backend = matches[0];
             backend["controls"] = controls;
+            if (widget.isMember("aif")) {
+                const auto &aif = widget["aif"];
+                if (!aif.isObject() || !aif["id"].isUInt() ||
+                    !aif["name"].isString() ||
+                    aif["name"].asString().empty() ||
+                    aif["name"].asString().size() >= 32 ||
+                    aif["name"].asString().find('\0') != std::string::npos ||
+                    !aif_ids.insert(aif["id"].asUInt()).second ||
+                    !aif_names.insert(aif["name"].asString()).second)
+                    throw std::runtime_error("Invalid native AIF identity");
+
+                for (const auto &key : aif.getMemberNames()) {
+                    if (key != "id" && key != "name")
+                        throw std::runtime_error("Unsupported native AIF field");
+                }
+
+                backend["aif"] = aif;
+            }
+
             result["backends"][id][direction] = backend;
         }
     }

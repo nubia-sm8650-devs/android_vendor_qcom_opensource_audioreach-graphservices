@@ -84,6 +84,7 @@ struct Bindings::Impl {
     std::map<std::string, Reference> references;
     std::map<std::string, uint32_t> hardware;
     std::map<std::string, Backend> backends;
+    std::map<uint32_t, Backend> aifs;
 };
 
 Bindings::Bindings(const Json::Value &input) : impl(new Impl)
@@ -205,6 +206,8 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
 
     std::map<BackendId, Backend> ports;
     std::map<std::string, BackendId> media_controls;
+    std::map<std::string, uint32_t> aif_names;
+    std::map<BackendId, uint32_t> aif_ports;
 
     for (const auto &gate : input["hardware_gates"]) {
         uint32_t graph = number(gate["graph_id"]);
@@ -222,7 +225,7 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
             Backend backend{graph, number(gate["module"]),
                 {text(native["provider"]), number(gate["dai"])},
                 text(native["path"]), text(native["name"]),
-                direction == "capture", {}};
+                direction == "capture", {}, {}};
             if (number(native["dai"]) != backend.id.second ||
                 (direction != "playback" && direction != "capture") ||
                 !impl->modules.at(graph).count(backend.module) ||
@@ -239,7 +242,8 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
             for (const auto &key : native["controls"].getMemberNames()) {
                 std::string control = text(native["controls"][key]);
                 if ((key != "rate" && key != "format" && key != "channels" &&
-                     key != "data_format") || control.size() >= 44 ||
+                     key != "data_format" && key != "channel_map") ||
+                    control.size() >= 44 ||
                     controls.count(control) || switches.count(control) ||
                     !names.insert(control).second)
                     throw std::invalid_argument("Invalid backend media control");
@@ -249,6 +253,43 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
                     throw std::invalid_argument("Conflicting backend control");
 
                 backend.controls.emplace(key, std::move(control));
+            }
+
+            if (backend.controls.count("channels") &&
+                backend.controls.count("channel_map"))
+                throw std::invalid_argument("Conflicting channel sources");
+
+            if (native.isMember("aif")) {
+                if (!native["aif"].isObject())
+                    throw std::invalid_argument("Invalid native AIF binding");
+
+                for (const auto &key : native["aif"].getMemberNames()) {
+                    if (key != "id" && key != "name")
+                        throw std::invalid_argument("Unsupported native AIF field");
+                }
+
+                backend.aif_name = text(native["aif"]["name"]);
+                backend.aif_id = number(native["aif"]["id"]);
+                if (backend.aif_name.size() >= 32 ||
+                    backend.aif_name.find('\0') != std::string::npos)
+                    throw std::invalid_argument("AIF name is too long");
+
+                auto [previous, added] = impl->aifs.emplace(backend.aif_id,
+                                                            backend);
+                if (!added && (previous->second.id != backend.id ||
+                    previous->second.aif_name != backend.aif_name ||
+                    previous->second.path != backend.path ||
+                    previous->second.controls != backend.controls ||
+                    previous->second.capture != backend.capture))
+                    throw std::invalid_argument("Conflicting AIF identity");
+
+                auto [named, new_name] = aif_names.emplace(backend.aif_name,
+                                                           backend.aif_id);
+                auto [port, new_port] = aif_ports.emplace(backend.id,
+                                                          backend.aif_id);
+                if ((!new_name && named->second != backend.aif_id) ||
+                    (!new_port && port->second != backend.aif_id))
+                    throw std::invalid_argument("Repeated AIF identity");
             }
 
             auto [prior, added] = ports.emplace(backend.id, backend);
@@ -363,6 +404,11 @@ int Bindings::select(const std::vector<Keys> &requests, Plan &plan) const
 const std::map<std::string, Reference> &Bindings::references() const
 {
     return impl->references;
+}
+
+const std::map<uint32_t, Backend> &Bindings::aifs() const
+{
+    return impl->aifs;
 }
 
 }

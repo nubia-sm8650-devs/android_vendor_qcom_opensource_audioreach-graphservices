@@ -189,6 +189,8 @@ int main(int argc, char **argv)
     backend["provider"] = "/dais";
     backend["path"] = "/sound/speaker";
     backend["name"] = "Speaker Playback";
+    backend["aif"]["id"] = 9;
+    backend["aif"]["name"] = "native playback";
     for (const char *key : {"rate", "format", "channels", "data_format"})
         backend["controls"][key] = std::string("explicit ") + key;
 
@@ -199,6 +201,30 @@ int main(int argc, char **argv)
     assert(native.graph == 2 && native.module == 0x4002 && !native.capture);
     assert(native.path == "/sound/speaker" && native.name == "Speaker Playback");
     assert(native.controls.at("data_format") == "explicit data_format");
+    assert(media.aifs().size() == 1);
+    assert(media.aifs().at(9).aif_name == "native playback");
+    auto repeated_input = input;
+    repeated_input["hardware_gates"].append(gate);
+    repeated_input["hardware_gates"][1]["control"] = "repeated hardware";
+    ar_topology::Bindings repeated(repeated_input);
+    assert(repeated.aifs().size() == 1);
+    assert(!repeated.select({{{10, 1}}, {{10, 2}}}, plan));
+    assert(plan.backends.size() == 2);
+    for (const char *field : {"id", "name", "group"}) {
+        auto conflict = repeated_input;
+        auto &aif = conflict["hardware_gates"][1]["backend"]["aif"];
+        if (std::string(field) == "id")
+            aif[field] = 10;
+        else
+            aif[field] = "other";
+        rejected = false;
+        try {
+            ar_topology::Bindings invalid(conflict);
+        } catch (const std::invalid_argument &) {
+            rejected = true;
+        }
+        assert(rejected);
+    }
     gate["module"] = 0x4003;
     rejected = false;
     try {
