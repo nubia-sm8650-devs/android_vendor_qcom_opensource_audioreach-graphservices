@@ -137,6 +137,8 @@ Use the `Runtime::acquire()` overload accepting `HardwareConfig` records to
 configure hardware before routes activate or frontend hardware setup runs.
 Each record names a complete opened GKV selection and supplies its rate,
 channel count, native data-format identity and ALSA sample-format name.
+An optional `HardwareConfig::backend` anchors the request to an exact native
+provider and DAI identity instead of accepting any port in that selection.
 The selection must identify one physical port, and every selected hardware
 gate must have a qualified backend binding and a supplied configuration.
 No frontend format, device alias or topology data-format default is inferred.
@@ -150,8 +152,20 @@ this API does not discover devices or implement live reconfiguration.
 
 Control writes stage backend configuration without sending DSP commands.
 An error prevents PCM admission, but already staged enum writes are not
-rolled back. A later admission preflights the controls again. Codec-map-only
-channel configuration, including SLIM, remains unsupported by this overload.
+rolled back. A later admission preflights the controls again.
+
+Bindings may provide a read-only `channel_map` control instead of a writable
+`channels` enum. Admission requires its live channel count to match the
+requested media and retains the ordered codec slots with the session. Shared
+admission and PREPARE/START reject a changed map with `-ESTALE`; close and
+reacquire before using the new map. The kernel backend retains map programming
+ownership. Userspace does not replace slots or turn this check into an atomic
+map lease across ALSA calls.
+
+`Bindings::aifs()` exposes explicitly declared physical AIF identities for
+device discovery. Repeated hardware gates retain their memberships while
+sharing one canonical AIF entry. Conflicting IDs, names or native ports are
+rejected; absent declarations do not generate stock aliases.
 
 ## PCM events and data buffer descriptor
 

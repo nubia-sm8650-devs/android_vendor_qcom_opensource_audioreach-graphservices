@@ -122,6 +122,7 @@ entry.
 ```json
 {"version": 1, "widgets": [
   {"dai": 16, "direction": "playback", "name": "Primary MI2S Playback",
+   "aif": {"id": 0, "name": "PRI_MI2S_RX"},
    "media_controls": {"rate": "Speaker Playback Rate",
                       "format": "Speaker Playback Format",
                       "channels": "Speaker Playback Channels",
@@ -134,7 +135,7 @@ not overlap any backend DAI ID in the supplied board. Hardware switches
 gate routing without taking formatting or state transitions from the
 backend callbacks.
 
-The optional `media_controls` object supplies exact enum control names for
+The optional `media_controls` object supplies exact control names for
 managed userspace media configuration. It retains the matching native DT
 backend's provider, port, path and link name in the hardware gate's `backend`
 binding. If multiple available links match the port and direction, add
@@ -142,9 +143,15 @@ binding. If multiple available links match the port and direction, add
 Repeated links remain separate; no link is chosen by occurrence order.
 
 Rate/Format/Channels names and Data Format names need not share a prefix.
-Use the controls exposed by the target card. A backend with codec-owned
-channel maps may omit `channels`, but the initial managed runtime rejects
-that configuration until codec-map integration is available.
+Use the controls exposed by the target card. For codec-owned channel maps,
+replace `channels` with `channel_map`, naming the read-only map control, such
+as `BT Capture Channel Map`. The two channel sources are mutually exclusive.
+
+The optional `aif` object declares a physical AGM identity independently of
+the widget and DT link names. It accepts only `id` and `name`, requires media
+controls and preserves the declaration in compact bindings. Use dense IDs
+from zero across the published AIF catalogue for AGM's index-based API.
+Grouped and virtual AIF declarations are not flattened into physical devices.
 
 Add `--pcm-bindings FILE` to declare explicit frontend roots. Take native
 subgraph IDs from the corpus report and choose PCM numbers for the client.
