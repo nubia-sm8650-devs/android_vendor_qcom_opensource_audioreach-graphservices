@@ -1344,6 +1344,13 @@ class CompilerTest(unittest.TestCase):
                  0x4001, qualified)):
             with self.subTest(hardware_gate=direction):
                 widget = {"dai": dai, "direction": direction, "name": port}
+                link_name = "Speaker Playback" if dai == 16 else "WCD Capture"
+                cpu_name = "PRI_MI2S_RX" if dai == 16 else "TX_CODEC_DMA_TX_3"
+                widget["media_controls"] = {
+                    "rate": link_name + " Rate",
+                    "format": link_name + " Format",
+                    "channels": link_name + " Channels",
+                    "data_format": cpu_name + " Data Format"}
                 hardware_widgets.write_text(json.dumps({
                     "version": 1, "widgets": [widget]}))
                 completed = self.run_exports([hardware_fixture(family)],
@@ -1362,6 +1369,10 @@ class CompilerTest(unittest.TestCase):
                                   gate["module"], gate["direction"]),
                                  (dai, 256, module, direction))
                 marker = gate["marker"]
+                self.assertEqual(gate["backend"]["provider"], "/dais")
+                self.assertEqual(gate["backend"]["name"], link_name)
+                self.assertEqual(gate["backend"]["controls"],
+                                 widget["media_controls"])
                 self.assertEqual(decoded[marker], [{1: 256}])
                 control = controls[marker]
                 self.assertEqual(gate["control"], marker + " " + control["name"])
@@ -1375,6 +1386,17 @@ class CompilerTest(unittest.TestCase):
                             (f"m{module}", "", marker))
                 self.assertEqual(set(dapm_routes(binary)), set(expected))
 
+                widget["backend"] = "/sound/absent"
+                hardware_widgets.write_text(json.dumps({
+                    "version": 1, "widgets": [widget]}))
+                self.output.write_text("retain")
+                completed = self.run_exports([hardware_fixture(family)],
+                    *options, *context, "--corpus", "--graph-id", "256",
+                    "--hardware-widgets", str(hardware_widgets),
+                    "--output", str(self.output))
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertEqual(self.output.read_text(), "retain")
+
                 hardware_widgets.write_text(json.dumps({
                     "version": 1, "widgets": []}))
                 self.output.write_text("retain")
@@ -1384,6 +1406,43 @@ class CompilerTest(unittest.TestCase):
                     "--output", str(self.output))
                 self.assertEqual(completed.returncode, 2, completed.stderr)
                 self.assertEqual(self.output.read_text(), "retain")
+
+        original_dts = dts.read_text()
+        dts.write_text(original_dts.replace("capture {", '''alternate {
+            link-name = "WCD Alternate";
+            cpu { sound-dai = <&backend 120>; };
+            codec { sound-dai = <&codec0 1>; };
+            platform { sound-dai = <&platform0>; };
+        };
+        capture {''', 1))
+        subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-o", str(dtb),
+                        str(dts)], check=True, capture_output=True)
+        widget.pop("backend")
+        hardware_widgets.write_text(json.dumps({
+            "version": 1, "widgets": [widget]}))
+        completed = self.run_exports([hardware_fixture("CODEC_DMA")],
+            *options, *qualified, "--corpus", "--graph-id", "256",
+            "--hardware-widgets", str(hardware_widgets),
+            "--output", str(self.output))
+        self.assertNotEqual(completed.returncode, 0)
+        widget["backend"] = "/sound/capture"
+        hardware_widgets.write_text(json.dumps({
+            "version": 1, "widgets": [widget]}))
+        completed = self.run_exports([hardware_fixture("CODEC_DMA")],
+            *options, *qualified, "--corpus", "--graph-id", "256",
+            "--hardware-widgets", str(hardware_widgets),
+            "--output", str(self.output))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(self.report.read_text())
+        gate, = report["corpus"]["subgraphs"][0]["hardware_gates"]
+        self.assertEqual(gate["backend"]["path"], "/sound/capture")
+        self.assertEqual(gate["backend"]["name"], "WCD Capture")
+        self.assertEqual(sum(link["dai"] == 120
+                             for link in report["board"]["links"]), 2)
+        dts.write_text(original_dts)
+        subprocess.run([dtc, "-I", "dts", "-O", "dtb", "-o", str(dtb),
+                        str(dts)], check=True, capture_output=True)
+        self.output.write_text("retain")
 
         hardware_widgets.write_text(json.dumps({
             "version": 1, "widgets": [{"dai": 120, "direction": "capture",

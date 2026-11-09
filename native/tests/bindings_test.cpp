@@ -179,6 +179,35 @@ int main(int argc, char **argv)
 
     assert(rejected);
 
+    input = fixture();
+    auto &gate = input["hardware_gates"][0];
+    gate["module"] = 0x4002;
+    gate["dai"] = 16;
+    gate["direction"] = "playback";
+    auto &backend = gate["backend"];
+    backend["dai"] = 16;
+    backend["provider"] = "/dais";
+    backend["path"] = "/sound/speaker";
+    backend["name"] = "Speaker Playback";
+    for (const char *key : {"rate", "format", "channels", "data_format"})
+        backend["controls"][key] = std::string("explicit ") + key;
+
+    ar_topology::Bindings media(input);
+    assert(!media.select({{{10, 1}}, {{10, 2}}}, plan));
+    const auto &native = plan.backends.at("hardware");
+    assert((native.id == ar_topology::BackendId{"/dais", 16}));
+    assert(native.graph == 2 && native.module == 0x4002 && !native.capture);
+    assert(native.path == "/sound/speaker" && native.name == "Speaker Playback");
+    assert(native.controls.at("data_format") == "explicit data_format");
+    gate["module"] = 0x4003;
+    rejected = false;
+    try {
+        ar_topology::Bindings invalid(input);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    assert(rejected);
+
     for (bool missing : {false, true}) {
         input = fixture();
 

@@ -83,6 +83,7 @@ struct Bindings::Impl {
     std::map<uint32_t, Frontend> frontends;
     std::map<std::string, Reference> references;
     std::map<std::string, uint32_t> hardware;
+    std::map<std::string, Backend> backends;
 };
 
 Bindings::Bindings(const Json::Value &input) : impl(new Impl)
@@ -202,14 +203,61 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
             throw std::invalid_argument("Invalid reference binding");
     }
 
+    std::map<BackendId, Backend> ports;
+    std::map<std::string, BackendId> media_controls;
+
     for (const auto &gate : input["hardware_gates"]) {
         uint32_t graph = number(gate["graph_id"]);
         std::string name = text(gate["control"]);
         if (!impl->graphs.count(graph) || roots.count(graph) ||
-            controls.count(name) || !switches.insert(name).second)
+            controls.count(name) || media_controls.count(name) ||
+            !switches.insert(name).second)
             throw std::invalid_argument("Invalid hardware gate binding");
 
         impl->hardware.emplace(name, graph);
+
+        if (gate.isMember("backend")) {
+            const auto &native = gate["backend"];
+            std::string direction = text(gate["direction"]);
+            Backend backend{graph, number(gate["module"]),
+                {text(native["provider"]), number(gate["dai"])},
+                text(native["path"]), text(native["name"]),
+                direction == "capture", {}};
+            if (number(native["dai"]) != backend.id.second ||
+                (direction != "playback" && direction != "capture") ||
+                !impl->modules.at(graph).count(backend.module) ||
+                !native["controls"].isObject())
+                throw std::invalid_argument("Invalid backend binding");
+
+            for (const char *key : {"rate", "format", "data_format"}) {
+                if (!native["controls"].isMember(key))
+                    throw std::invalid_argument("Missing backend media control");
+            }
+
+            std::set<std::string> names;
+
+            for (const auto &key : native["controls"].getMemberNames()) {
+                std::string control = text(native["controls"][key]);
+                if ((key != "rate" && key != "format" && key != "channels" &&
+                     key != "data_format") || control.size() >= 44 ||
+                    controls.count(control) || switches.count(control) ||
+                    !names.insert(control).second)
+                    throw std::invalid_argument("Invalid backend media control");
+
+                auto [prior, added] = media_controls.emplace(control, backend.id);
+                if (!added && prior->second != backend.id)
+                    throw std::invalid_argument("Conflicting backend control");
+
+                backend.controls.emplace(key, std::move(control));
+            }
+
+            auto [prior, added] = ports.emplace(backend.id, backend);
+            if (!added && (prior->second.controls != backend.controls ||
+                           prior->second.capture != backend.capture))
+                throw std::invalid_argument("Conflicting backend identity");
+
+            impl->backends.emplace(name, std::move(backend));
+        }
     }
 
     for (const auto &[keys, selection] : impl->selections) {
@@ -293,8 +341,13 @@ int Bindings::select(const std::vector<Keys> &requests, Plan &plan) const
             return -EOPNOTSUPP;
 
         for (const auto &[name, graph] : impl->hardware) {
-            if (result.graphs.count(graph))
+            if (result.graphs.count(graph)) {
                 result.hardware.insert(name);
+
+                auto backend = impl->backends.find(name);
+                if (backend != impl->backends.end())
+                    result.backends.emplace(*backend);
+            }
         }
 
         plan = std::move(result);

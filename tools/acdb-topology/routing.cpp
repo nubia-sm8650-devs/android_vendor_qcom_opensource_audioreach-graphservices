@@ -50,6 +50,42 @@ Json::Value read_hardware_widgets(const Json::Value &input,
         }
 
         result["widgets"][id][direction] = name;
+
+        if (widget.isMember("media_controls")) {
+            const auto &controls = widget["media_controls"];
+            if (!controls.isObject())
+                throw std::runtime_error("Invalid backend media controls");
+
+            for (const char *key : {"rate", "format", "data_format"}) {
+                if (!controls.isMember(key))
+                    throw std::runtime_error("Missing backend media control");
+            }
+
+            for (const auto &key : controls.getMemberNames()) {
+                const auto &value = controls[key];
+                if ((key != "rate" && key != "format" && key != "channels" &&
+                     key != "data_format") || !value.isString() ||
+                    value.asString().empty() || value.asString().size() >= 44)
+                    throw std::runtime_error("Invalid backend media control");
+            }
+
+            Json::Value matches(Json::arrayValue);
+
+            for (const auto &link : board["links"]) {
+                if (link["dai"].asUInt() == widget["dai"].asUInt() &&
+                    link["transport"]["direction"] == direction &&
+                    (!widget.isMember("backend") ||
+                     widget["backend"] == link["path"]))
+                    matches.append(link);
+            }
+
+            if (matches.size() != 1)
+                throw std::runtime_error("Ambiguous backend media identity");
+
+            auto backend = matches[0];
+            backend["controls"] = controls;
+            result["backends"][id][direction] = backend;
+        }
     }
 
     return result;
@@ -112,6 +148,10 @@ void bind_hardware_widgets(Compilation &compiled, uint32_t graph_id,
         gate["hardware_widget"] = port;
         gate["marker"] = marker;
         gate["control"] = marker + " " + control;
+        const auto &backend = widgets["backends"][std::to_string(dai)][direction];
+        if (!backend.isNull())
+            gate["backend"] = backend;
+
         gates.append(gate);
     }
 

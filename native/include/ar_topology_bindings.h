@@ -28,12 +28,23 @@ struct Reference {
     std::string path;
 };
 
+using BackendId = std::pair<std::string, uint32_t>;
+
+struct Backend {
+    uint32_t graph, module;
+    BackendId id;
+    std::string path, name;
+    bool capture;
+    std::map<std::string, std::string> controls;
+};
+
 struct Plan {
     std::map<uint32_t, Graph> graphs;
     std::map<uint32_t, uint32_t> modules;
     std::map<Keys, std::set<uint32_t>> selections;
     std::vector<Frontend> frontends;
     std::set<std::string> references, paths, hardware;
+    std::map<std::string, Backend> backends;
 };
 
 class Bindings {
