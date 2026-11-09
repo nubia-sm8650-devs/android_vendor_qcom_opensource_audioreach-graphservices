@@ -320,6 +320,7 @@ int Runtime::prepare(SessionId id, Configure configure, void *context)
         return -ENOENT;
 
     auto &session = found->second;
+
     for (const auto &stream : session.streams) {
         int value = state(stream);
         if (value < 0)
