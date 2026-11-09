@@ -111,3 +111,53 @@ Corpus output covers declarations, reference controls and parameter controls.
 It does not bind PCM ownership, DAPM activation or runtime hardware setup.
 `runtime_bindings` remains false. Without `--corpus`, `--exports` retains its
 individual-selection reporting behavior.
+
+## PCM and DAPM bindings
+
+Supply `--hardware-widgets FILE` in corpus mode to connect qualified ports
+to their existing backend stream widgets. Use stream widget names, not DT
+link names or DAI driver names. For example, the speaker port uses this
+entry.
+
+```json
+{"version": 1, "widgets": [
+  {"dai": 16, "direction": "playback", "name": "Primary MI2S Playback"}
+]}
+```
+
+Every selected physical endpoint needs a matching entry. Graph IDs must
+not overlap any backend DAI ID in the supplied board. Hardware switches
+gate routing without taking formatting or state transitions from the
+backend callbacks.
+
+Add `--pcm-bindings FILE` to declare explicit frontend roots. Take native
+subgraph IDs from the corpus report and choose PCM numbers for the client.
+For example, a PCM root declaration has this shape.
+
+```json
+{"version": 1, "pcms": [
+  {"id": 0, "subgraph": "0xb0000001", "direction": "playback", "mode": "pcm",
+   "capabilities": {"formats": ["S16_LE"], "rates": [48000],
+                    "channels_min": 1, "channels_max": 2}}
+]}
+```
+
+These are advertised frontend capabilities, not hardware defaults. A PCM
+root must contain one shared-memory endpoint in its declared direction.
+For an explicit hostless application, use `"mode": "hostless"` and a
+numeric `module` identifying its root module. Device graphs cannot own
+frontends. Compressed and bidirectional non-tunnel bindings are not
+silently converted to PCM.
+
+Intrinsic data paths retain their native connectivity. Cross-graph data
+paths get separate DAPM switches, while DSP connections keep their
+reference controls. A selection's `paths` includes only references whose
+two graphs belong to that selection. Its `tuning` list names exactly its
+selected subgraphs and SET controls, without adding reference peers.
+`ownership_bound` describes frontend reachability; `unowned_graphs` keeps
+missing ownership explicit. Neither establishes DSP or device acceptance.
+
+Use `--bindings-output FILE` for a compact userspace file without graph
+blobs. It retains complete graph keys, frontends, memberships, reference
+and path controls, hardware gates and tuning associations. Unavailable or
+conflicting hardware still blocks both topology and binding output.
