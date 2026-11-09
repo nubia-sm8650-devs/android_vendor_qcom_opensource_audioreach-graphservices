@@ -811,6 +811,9 @@ int main()
     assert(device.bytes == custom);
     assert(!runtime.start(first));
     assert(!runtime.start(second));
+    assert(!runtime.sync_pcm(first, 1, sync));
+    assert(sync.s.status.hw_ptr == 127);
+    assert(sync.s.status.state == SNDRV_PCM_STATE_RUNNING);
     rejected_stop = 1;
     assert(runtime.stop(first) == -EIO);
     assert(a[0].handle->state == SNDRV_PCM_STATE_SETUP);

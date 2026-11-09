@@ -783,7 +783,8 @@ int Runtime::start(SessionId id)
         if (value == SNDRV_PCM_STATE_RUNNING)
             continue;
 
-        int status = result(pcm_start(stream.handle));
+        int status = result(pcm_ioctl(stream.handle, SNDRV_PCM_IOCTL_START,
+                                      nullptr));
         if (status)
             return status;
     }
