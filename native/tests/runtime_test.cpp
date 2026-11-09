@@ -6,6 +6,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <acdb.h>
@@ -25,6 +26,10 @@ using Bytes = std::vector<uint8_t>;
 struct pcm {
     unsigned id;
     snd_pcm_state_t state = SNDRV_PCM_STATE_SETUP;
+    unsigned flags = 0;
+    int fds[2] = {-1, -1};
+    snd_pcm_sync_ptr position{};
+    int sync_error = 0;
 };
 
 struct mixer_ctl {
@@ -132,7 +137,7 @@ extern "C" int32_t acdb_ioctl(uint32_t command, const void *input,
     return AR_EOK;
 }
 
-extern "C" struct pcm *pcm_open(unsigned, unsigned device, unsigned,
+extern "C" struct pcm *pcm_open(unsigned, unsigned device, unsigned flags,
                                  struct pcm_config *)
 {
     if (backend_mixer) {
@@ -149,6 +154,8 @@ extern "C" struct pcm *pcm_open(unsigned, unsigned device, unsigned,
         return &bad_pcm;
 
     auto *handle = new pcm{device};
+    handle->flags = flags;
+    assert(!pipe2(handle->fds, O_CLOEXEC | O_NONBLOCK));
     open_pcms.insert(handle);
     return handle;
 }
@@ -164,19 +171,45 @@ extern "C" int pcm_close(struct pcm *handle)
         return 0;
 
     assert(open_pcms.erase(handle));
+    close(handle->fds[0]);
+    close(handle->fds[1]);
     delete handle;
     return 0;
 }
 
 extern "C" int pcm_ioctl(struct pcm *handle, int request, ...)
 {
-    assert(unsigned(request) == SNDRV_PCM_IOCTL_STATUS);
     va_list args;
     va_start(args, request);
-    auto *status = va_arg(args, struct snd_pcm_status *);
-    status->state = handle->state;
+    void *data = va_arg(args, void *);
     va_end(args);
+
+    if (unsigned(request) == SNDRV_PCM_IOCTL_SYNC_PTR) {
+        if (handle->sync_error) {
+            errno = handle->sync_error;
+            return -1;
+        }
+
+        auto &sync = *static_cast<snd_pcm_sync_ptr *>(data);
+        auto &control = handle->position.c.control;
+        if (!(sync.flags & SNDRV_PCM_SYNC_PTR_APPL))
+            control.appl_ptr = sync.c.control.appl_ptr;
+        if (!(sync.flags & SNDRV_PCM_SYNC_PTR_AVAIL_MIN))
+            control.avail_min = sync.c.control.avail_min;
+        sync.c.control = control;
+        sync.s.status = handle->position.s.status;
+        sync.s.status.state = handle->state;
+        return 0;
+    }
+
+    assert(unsigned(request) == SNDRV_PCM_IOCTL_STATUS);
+    static_cast<snd_pcm_status *>(data)->state = handle->state;
     return 0;
+}
+
+extern "C" int pcm_get_poll_fd(struct pcm *handle)
+{
+    return handle->fds[handle->flags & PCM_IN ? 0 : 1];
 }
 
 extern "C" int pcm_prepare(struct pcm *handle)
