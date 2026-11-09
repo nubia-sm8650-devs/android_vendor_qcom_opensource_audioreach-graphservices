@@ -1,11 +1,16 @@
 filegroup {
+    name: "ar-topology-pcm-control-sources",
+    srcs: ["pcm_controls.cpp"],
+}
+
+filegroup {
     name: "ar-topology-runtime-sources",
     srcs: [
         "bindings.cpp",
         "defaults.cpp",
         "media.cpp",
         "parameters.cpp",
-        "pcm_controls.cpp",
+        ":ar-topology-pcm-control-sources",
         "prepare.cpp",
         "runtime.cpp",
     ],
