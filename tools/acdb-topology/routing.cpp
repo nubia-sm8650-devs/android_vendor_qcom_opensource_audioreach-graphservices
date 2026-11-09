@@ -3,7 +3,6 @@
 
 #include <sstream>
 #include <stdexcept>
-#include <sound/snd_ar_tokens.h>
 
 namespace acdb_topology
 {
@@ -87,21 +86,10 @@ void bind_hardware_widgets(Compilation &compiled, uint32_t graph_id,
 
         std::string marker = "ar_hw" + std::to_string(module);
         std::string control = marker + "_on";
-        std::string data = marker + "_graph";
         std::string module_widget = "m" + std::to_string(module);
         std::string port = widget.asString();
-        tuples(out, data, {{AR_TKN_DAI_INDEX, graph_id}});
-        compiled.topology.tokens.insert(AR_TKN_DAI_INDEX);
-        out << "SectionControlMixer.\"" << control << "\" {\n"
-            << "    max \"1\"\n    no_pm \"true\"\n"
-            << "    channel.\"fl\" { reg \"-1\" shift \"0\" }\n"
-            << "    channel.\"fr\" { reg \"-1\" shift \"0\" }\n"
-            << "    ops.\"ctl\" { get \"64\" put \"64\" info \"1\" }\n"
-            << "}\n\nSectionWidget.\"" << marker << "\" {\n"
-            << "    type \"mixer\"\n    no_pm \"true\"\n"
-            << "    data [ \"" << data << "\" ]\n"
-            << "    mixer [ \"" << control << "\" ]\n}\n\n"
-            << "SectionGraph.\"" << marker << "\" {\n    index \"0\"\n"
+        dapm_switch(compiled.topology, marker, graph_id);
+        out << "SectionGraph.\"" << marker << "\" {\n    index \"0\"\n"
             << "    lines [\n";
 
         if (direction == "playback") {

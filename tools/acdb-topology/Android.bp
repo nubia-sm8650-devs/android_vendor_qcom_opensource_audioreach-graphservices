@@ -14,6 +14,7 @@ cc_binary_host {
         "board.cpp",
         "hardware.cpp",
         "routing.cpp",
+        "frontends.cpp",
     ],
     include_dirs: ["bionic/libc/kernel/uapi"],
     cpp_std: "c++17",

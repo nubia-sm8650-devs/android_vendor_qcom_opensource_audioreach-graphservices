@@ -36,6 +36,9 @@ void control_data(std::ostream &out, const std::string &name,
                   const std::vector<Connection> &links);
 void tuples(std::ostream &out, const std::string &name, const Tokens &tokens);
 Json::Value parameter_controls(Topology &topology, uint32_t graph_id);
+void dapm_switch(Topology &topology, const std::string &name,
+                  uint32_t graph_id);
+void bind_frontends(Compilation &compiled, const Json::Value &input);
 Json::Value query_graph(const std::vector<std::string> &paths,
                        const Keys &keys);
 Compilation compile_graph(const Source &graph, uint32_t graph_id,

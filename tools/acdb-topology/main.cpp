@@ -42,7 +42,7 @@ int main(int argc, char **argv)
         std::set<uint32_t> key_ids;
         std::string exports, input, output, report;
         std::string resources, usecases, dtb, selection_contexts;
-        std::string hardware_widgets;
+        std::string hardware_widgets, pcm_bindings, bindings_output;
         Json::Value context(Json::objectValue), devices(Json::arrayValue);
         uint32_t graph_id = 0;
         bool corpus = false;
@@ -61,7 +61,8 @@ int main(int argc, char **argv)
                           << "   --device-pp-type TYPE\n"
                           << "   --context NAME=VALUE ...]\n"
                           << "  [--selection-contexts FILE]\n"
-                          << "  [--hardware-widgets FILE]\n";
+                          << "  [--hardware-widgets FILE]\n"
+                          << "  [--pcm-bindings FILE] [--bindings-output FILE]\n";
                 return 0;
             }
 
@@ -109,6 +110,10 @@ int main(int argc, char **argv)
                 selection_contexts = value;
             else if (option == "--hardware-widgets")
                 hardware_widgets = value;
+            else if (option == "--pcm-bindings")
+                pcm_bindings = value;
+            else if (option == "--bindings-output")
+                bindings_output = value;
             else if (option == "--stream-type")
                 context["StreamType"] = value;
             else if (option == "--device-pp-type")
@@ -140,6 +145,12 @@ int main(int argc, char **argv)
         if (!hardware_widgets.empty() && (!board_inputs || !corpus))
             throw std::runtime_error(
                 "Hardware widgets require board inputs and corpus mode");
+
+        if (!pcm_bindings.empty() && hardware_widgets.empty())
+            throw std::runtime_error("PCM bindings require hardware widgets");
+
+        if (!bindings_output.empty() && pcm_bindings.empty())
+            throw std::runtime_error("Bindings output requires PCM bindings");
 
         if (!board_inputs && (!context.empty() || !devices.empty() ||
                              !selection_contexts.empty()))
@@ -243,6 +254,12 @@ int main(int argc, char **argv)
 
             auto compiled = acdb_topology::compile_corpus(
                 sources, result["factored"], graph_id, widgets);
+            if (!pcm_bindings.empty()) {
+                acdb_topology::bind_frontends(compiled,
+                                              read_json(pcm_bindings));
+                result["pcm_bindings"] = pcm_bindings;
+            }
+
             result["corpus"] = compiled.report;
             can_emit = compiled.report["can_emit"].asBool();
             topology = compiled.topology.render();
@@ -260,6 +277,26 @@ int main(int argc, char **argv)
 
         if (!output.empty())
             write(output, topology);
+
+        if (!bindings_output.empty()) {
+            Json::Value bindings;
+            bindings["version"] = 1;
+            bindings["dsp_execution_verified"] = false;
+            bindings["frontends"] = result["corpus"]["frontends"];
+            bindings["selections"] = result["corpus"]["selections"];
+            bindings["hardware_gates"] = Json::Value(Json::arrayValue);
+
+            for (const auto &subgraph : result["corpus"]["subgraphs"]) {
+                for (const auto &gate : subgraph["hardware_gates"])
+                    bindings["hardware_gates"].append(gate);
+            }
+
+            for (Json::ArrayIndex i = 0; i < bindings["selections"].size(); i++)
+                bindings["selections"][i]["graph_keys"] =
+                    result["factored"]["selections"][i]["metadata"]["graph_keys"];
+
+            write(bindings_output, Json::writeString(writer, bindings) + "\n");
+        }
 
         return 0;
     } catch (const std::exception &error) {

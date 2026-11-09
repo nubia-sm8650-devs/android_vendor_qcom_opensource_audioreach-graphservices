@@ -107,4 +107,24 @@ Json::Value parameter_controls(Topology &topology, uint32_t graph_id)
     return result;
 }
 
+void dapm_switch(Topology &topology, const std::string &name,
+                  uint32_t graph_id)
+{
+    std::ostringstream out;
+    std::string control = name + "_on";
+    std::string data = name + "_graph";
+    tuples(out, data, {{AR_TKN_DAI_INDEX, graph_id}});
+    topology.tokens.insert(AR_TKN_DAI_INDEX);
+    out << "SectionControlMixer.\"" << control << "\" {\n"
+        << "    max \"1\"\n    no_pm \"true\"\n"
+        << "    channel.\"fl\" { reg \"-1\" shift \"0\" }\n"
+        << "    channel.\"fr\" { reg \"-1\" shift \"0\" }\n"
+        << "    ops.\"ctl\" { get \"64\" put \"64\" info \"1\" }\n"
+        << "}\n\nSectionWidget.\"" << name << "\" {\n"
+        << "    type \"mixer\"\n    no_pm \"true\"\n"
+        << "    data [ \"" << data << "\" ]\n"
+        << "    mixer [ \"" << control << "\" ]\n}\n\n";
+    topology.body += out.str();
+}
+
 }

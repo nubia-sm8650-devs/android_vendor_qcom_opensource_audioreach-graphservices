@@ -388,6 +388,41 @@ def dapm_routes(data):
     return result
 
 
+def pcms(data):
+    position = 0
+    result = {}
+
+    while position < len(data):
+        header = struct.unpack_from("<9I", data, position)
+        position += header[4]
+        end = position + header[6]
+
+        if header[3] == 7:
+            for _ in range(header[8]):
+                size, name, dai_name, pcm_id, dai_id, playback, capture, compr = (
+                    struct.unpack_from("<I44s44s5I", data, position))
+                direction = 0 if playback else 1
+                cap = position + size - 12 - 208 + direction * 104
+                _, stream, formats, rates, low, high, ch_low, ch_high = (
+                    struct.unpack_from("<I44sQ5I", data, cap))
+                result[pcm_id] = {
+                    "name": name.split(b"\0")[0].decode(),
+                    "dai_name": dai_name.split(b"\0")[0].decode(),
+                    "dai_id": dai_id, "playback": playback, "capture": capture,
+                    "compress": compr, "stream": stream.split(b"\0")[0].decode(),
+                    "formats": formats, "rates": rates, "rate_range": (low, high),
+                    "channels": (ch_low, ch_high)}
+                private_size, = struct.unpack_from("<I", data,
+                                                   position + size - 4)
+                position += size + private_size
+
+            assert position == end
+
+        position = end
+
+    return result
+
+
 def append_modules(source, modules):
     group = words(1, 0xB0000001, 0xE0000001, len(modules))
     ports = words(len(modules))
@@ -503,6 +538,117 @@ class CompilerTest(unittest.TestCase):
                 self.assertGreater(control["max"], 8 * 1024 * 1024)
 
         self.assertEqual(set(controls), expected_names)
+
+    def test_frontends_preserve_direction_hostless_roots_and_membership(self):
+        dts = self.root / "empty.dts"
+        dtb = self.root / "empty.dtb"
+        dts.write_text("/dts-v1/; / {};")
+        subprocess.run(["dtc", "-I", "dts", "-O", "dtb", "-o", str(dtb),
+                        str(dts)], check=True, capture_output=True)
+        resources = self.root / "resources.xml"
+        resources.write_text("<resource_manager_info><device_profile/>"
+                             "</resource_manager_info>")
+        usecases = self.root / "usecases.xml"
+        usecases.write_text("<graph_key_value_pair_info><devices/><devicepps/>"
+                            "</graph_key_value_pair_info>")
+        hardware = self.root / "widgets.json"
+        hardware.write_text('{"version":1,"widgets":[]}')
+        bindings = self.root / "pcms.json"
+        manifest = self.root / "bindings.json"
+        options = ["--corpus", "--graph-id", "256", "--output", str(self.output),
+                   "--resource-manager", str(resources), "--usecase-kv",
+                   str(usecases), "--board-dtb", str(dtb),
+                   "--hardware-widgets", str(hardware),
+                   "--pcm-bindings", str(bindings),
+                   "--bindings-output", str(manifest)]
+        caps = {"formats": ["S16_LE"], "rates": [48000],
+                "channels_min": 1, "channels_max": 2}
+
+        for direction in ("playback", "capture"):
+            with self.subTest(direction=direction):
+                sources = corpus_fixtures()
+                playback = direction == "playback"
+                old, new = (0x07001005, 0x07001000) if playback else (
+                            0x07001004, 0x07001001)
+                for source in sources:
+                    source["graph_open"] = source["graph_open"].replace(
+                        words(old).hex(), words(new).hex())
+                root_sg, other_sg = ((0xB0000001, 0xB0000002) if playback else
+                                    (0xB0000002, 0xB0000001))
+                root_module, other_module = (0x4001, 0x4002) if playback else (
+                                             0x4002, 0x4001)
+                definitions = [
+                    {"id": 0, "subgraph": hex(root_sg), "direction": direction,
+                     "mode": "pcm", "capabilities": caps},
+                    {"id": 7, "subgraph": hex(other_sg), "direction": direction,
+                     "mode": "hostless", "module": other_module,
+                     "capabilities": caps}]
+                bindings.write_text(json.dumps({"version": 1,
+                                                "pcms": definitions}))
+                completed = self.run_exports(sources, *options)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.read_topology()
+                binary = (self.root / "topology.bin").read_bytes()
+                decoded = pcms(binary)
+                report = json.loads(self.report.read_text())
+                self.assertEqual(reconstruct(report["factored"]), sources)
+                corpus = report["corpus"]
+                self.assertFalse(corpus["runtime_bindings"])
+                self.assertEqual([s["graphs"] for s in corpus["selections"]],
+                                 [[256, 257], [256], [257]])
+                self.assertEqual([len(s["paths"]) for s in corpus["selections"]],
+                                 [1, 0, 0])
+                exported = json.loads(manifest.read_text())
+                self.assertEqual(exported["frontends"], corpus["frontends"])
+                self.assertFalse(exported["dsp_execution_verified"])
+                for selection, original in zip(exported["selections"], sources):
+                    self.assertEqual(selection["graph_keys"],
+                                     original["graph_keys"])
+                    self.assertTrue(selection["ownership_bound"])
+                    self.assertEqual([g["graph_id"] for g in selection["tuning"]],
+                                     selection["graphs"])
+                    self.assertEqual({g["subgraph"] for g in selection["tuning"]},
+                                     {int(sg, 0) for sg in original["subgraph_ids"]})
+                    self.assertTrue(all(g["set_control"] ==
+                        f'ar_g{g["graph_id"]}_set' for g in selection["tuning"]))
+                self.assertEqual(set(decoded), {0, 7})
+                for frontend in corpus["frontends"]:
+                    pcm = decoded[frontend["pcm_id"]]
+                    self.assertEqual(pcm["dai_id"], frontend["graph_id"])
+                    self.assertEqual(pcm["name"], frontend["name"])
+                    self.assertEqual(pcm["dai_name"], frontend["dai_name"])
+                    self.assertEqual(pcm["stream"], frontend["stream_widget"])
+                    self.assertEqual((pcm["playback"], pcm["capture"]),
+                                     (1, 0) if playback else (0, 1))
+                    self.assertEqual(pcm["compress"], 0)
+                    self.assertEqual(pcm["formats"], 4)
+                    self.assertEqual(pcm["rates"], 128)
+                    self.assertEqual(pcm["channels"], (1, 2))
+                    node = f'm{frontend["module"]}'
+                    path = (node, "", pcm["stream"]) if playback else (
+                            pcm["stream"], "", node)
+                    self.assertIn(path, dapm_routes(binary))
+
+                self.assertEqual(corpus["frontends"][0]["module"], root_module)
+                bindings.write_text(json.dumps({"version": 1,
+                                                "pcms": definitions[:1]}))
+                completed = self.run_exports(sources, *options)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                partial = json.loads(manifest.read_text())["selections"]
+                self.assertTrue(partial[0]["ownership_bound"])
+                orphan = partial[2 if playback else 1]
+                self.assertFalse(orphan["ownership_bound"])
+                self.assertEqual(orphan["unowned_graphs"],
+                                 [257 if playback else 256])
+                self.output.write_text("retain")
+                manifest.write_text("retain bindings")
+                definitions[1]["subgraph"] = hex(root_sg)
+                bindings.write_text(json.dumps({"version": 1,
+                                                "pcms": definitions}))
+                completed = self.run_exports(sources, *options)
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                self.assertEqual(self.output.read_text(), "retain")
+                self.assertEqual(manifest.read_text(), "retain bindings")
 
     def read_topology(self, kinds=None, blocks=None):
         if not shutil.which("alsatplg"):
