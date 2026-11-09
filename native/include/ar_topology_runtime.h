@@ -3,6 +3,7 @@
 #define AR_TOPOLOGY_RUNTIME_H
 
 #include "ar_topology_parameters.h"
+#include "ar_topology_media.h"
 
 #include <tinyalsa/asoundlib.h>
 
@@ -30,7 +31,10 @@ public:
     Runtime(unsigned card, struct mixer *mixer, const Bindings &bindings);
     ~Runtime();
     int acquire(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,
-                SessionId &id, std::vector<Stream> &streams);
+                 SessionId &id, std::vector<Stream> &streams);
+    int acquire(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,
+                  const std::vector<HardwareConfig> &hardware, SessionId &id,
+                  std::vector<Stream> &streams);
     int prepare(SessionId id, Configure configure = nullptr,
                  void *context = nullptr);
     int prepare_parameters(SessionId id, ConfigureParameters configure,
@@ -51,6 +55,11 @@ public:
     int close(SessionId id);
 
 private:
+    int acquire_impl(const std::vector<Keys> &requests,
+                      const std::vector<Pcm> &pcms,
+                      const std::vector<HardwareConfig> *hardware,
+                      SessionId &id,
+                      std::vector<Stream> &streams);
     int prepare_impl(SessionId id, Configure configure,
                       ConfigureParameters parameters, void *context);
     struct Impl;

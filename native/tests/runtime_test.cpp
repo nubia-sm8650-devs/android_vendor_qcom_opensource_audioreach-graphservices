@@ -34,6 +34,7 @@ struct mixer_ctl {
     bool reject_disable = false;
     bool reject_parameters = false;
     Bytes bytes;
+    std::vector<std::string> enums{};
 };
 
 struct mixer {
@@ -49,6 +50,9 @@ static int rejected_stop = -1;
 static int rejected_open = -1;
 static pcm bad_pcm{UINT32_MAX};
 static int control_fd = -1;
+static mixer *backend_mixer;
+static unsigned backend_rate;
+static std::string backend_data_format;
 
 extern "C" int __real_open(const char *, int, ...);
 
@@ -125,6 +129,16 @@ extern "C" int32_t acdb_ioctl(uint32_t command, const void *input,
 extern "C" struct pcm *pcm_open(unsigned, unsigned device, unsigned,
                                  struct pcm_config *)
 {
+    if (backend_mixer) {
+        auto value = [](const char *name) -> const std::string & {
+            const auto &control = backend_mixer->controls.at(name);
+            return control.enums.at(control.enabled);
+        };
+        assert(value("backend rate") == std::to_string(backend_rate));
+        assert(value("backend channels") == "2");
+        assert(value("backend format") == "S16_LE");
+        assert(value("backend data_format") == backend_data_format);
+    }
     if (int(device) == rejected_open)
         return &bad_pcm;
 
@@ -199,7 +213,20 @@ extern "C" struct mixer_ctl *mixer_get_ctl_by_name(struct mixer *handle,
 
 extern "C" enum mixer_ctl_type mixer_ctl_get_type(struct mixer_ctl *control)
 {
+    if (!control->enums.empty())
+        return MIXER_CTL_TYPE_ENUM;
     return control->parameter ? MIXER_CTL_TYPE_BYTE : MIXER_CTL_TYPE_BOOL;
+}
+
+extern "C" unsigned mixer_ctl_get_num_enums(struct mixer_ctl *control)
+{
+    return control->enums.size();
+}
+
+extern "C" const char *mixer_ctl_get_enum_string(struct mixer_ctl *control,
+                                                unsigned item)
+{
+    return control->enums.at(item).c_str();
 }
 
 extern "C" unsigned mixer_ctl_get_num_values(struct mixer_ctl *)
@@ -360,8 +387,127 @@ static int initialize(void *opaque,
     return value.reject ? -ECANCELED : 0;
 }
 
+static void media_configuration()
+{
+    using namespace ar_topology;
+    auto input = fixture();
+    auto &gate = input["hardware_gates"][0];
+    gate["module"] = 0x4003;
+    gate["dai"] = 16;
+    gate["direction"] = "playback";
+    auto &backend = gate["backend"];
+    backend["dai"] = 16;
+    backend["provider"] = "/dais";
+    backend["path"] = "/sound/speaker";
+    backend["name"] = "Speaker Playback";
+    for (const char *key : {"rate", "format", "channels", "data_format"})
+        backend["controls"][key] = std::string("backend ") + key;
+
+    Bindings bindings(input);
+    auto controls = make_mixer();
+    controls.controls["backend rate"].enums = {"96000", "48000"};
+    controls.controls["backend channels"].enums = {"1", "2"};
+    controls.controls["backend format"].enums = {"S32_LE", "S16_LE"};
+    controls.controls["backend data_format"].enums = {
+        "Topology", "Compressed over PCM", "Fixed Point"};
+    Runtime runtime(0, &controls, bindings);
+    backend_mixer = &controls;
+    backend_rate = 48000;
+    backend_data_format = "Fixed Point";
+    Media config{48000, 2, 1, "S16_LE"};
+    HardwareConfig first{{{10, 1}}, config}, second{{{10, 2}}, config};
+    SessionId a = 0, b = 0;
+    std::vector<Stream> x, y;
+
+    first.media.rate = 12345;
+    assert(runtime.acquire({first.selection}, {configuration(1)}, {first}, a, x)
+           == -EINVAL);
+    assert(!a && x.empty() && open_pcms.empty());
+    for (const char *key : {"rate", "format", "channels", "data_format"})
+        assert(!controls.controls.at(std::string("backend ") + key).enabled);
+
+    first.media = config;
+    assert(!runtime.acquire({first.selection}, {configuration(1)}, {first},
+                             a, x));
+    assert(controls.controls.at("backend rate").enabled == 1);
+    assert(controls.controls.at("backend format").enabled == 1);
+    assert(controls.controls.at("backend channels").enabled == 1);
+    assert(controls.controls.at("backend data_format").enabled == 2);
+    assert(runtime.acquire({second.selection}, {configuration(2)}, b, y) ==
+           -EBUSY);
+    second.media.rate = 96000;
+    assert(runtime.acquire({second.selection}, {configuration(2)}, {second},
+        b, y)
+           == -EBUSY);
+    assert(!b && y.empty());
+    assert(!controls.controls.at("path2").enabled);
+    assert(!controls.controls.at("link2").enabled);
+    assert(controls.controls.at("backend rate").enabled == 1);
+    second.media = config;
+    assert(!runtime.acquire({second.selection}, {configuration(2)}, {second},
+                             b, y));
+    assert(!runtime.close(a));
+    a = 0;
+    x.clear();
+    first.media.rate = 96000;
+    assert(runtime.acquire({first.selection}, {configuration(1)}, {first}, a, x)
+           == -EBUSY);
+    assert(!runtime.close(b));
+    first.media.data_format = 7;
+    backend_rate = 96000;
+    backend_data_format = "Compressed over PCM";
+    assert(!runtime.acquire({first.selection}, {configuration(1)}, {first},
+                             a, x));
+    assert(!controls.controls.at("backend rate").enabled);
+    assert(!runtime.close(a));
+    assert(open_pcms.empty());
+    backend_mixer = nullptr;
+
+    Json::Value combined = input["selections"][0];
+    combined["graph_keys"][0][1] = "99";
+    for (const auto &graph : input["selections"][2]["graphs"])
+        combined["graphs"].append(graph);
+    for (const auto &graph : input["selections"][2]["tuning"])
+        combined["tuning"].append(graph);
+    combined["references"].append("link4");
+    input["selections"].append(combined);
+    auto &other = input["hardware_gates"][1];
+    other["module"] = 0x4005;
+    other["dai"] = 120;
+    other["direction"] = "capture";
+    other["backend"] = backend;
+    other["backend"]["dai"] = 120;
+    other["backend"]["path"] = "/sound/other";
+    for (const char *key : {"rate", "format", "channels", "data_format"})
+        other["backend"]["controls"][key] = std::string("other ") + key;
+    Bindings duplex(input);
+    Runtime ambiguous(0, &controls, duplex);
+    a = 0;
+    x.clear();
+    HardwareConfig unspecified{{{10, 99}}, config};
+    assert(ambiguous.acquire({unspecified.selection},
+        {configuration(1), configuration(4)}, {unspecified}, a, x) ==
+        -EOPNOTSUPP);
+    assert(!a && x.empty() && open_pcms.empty());
+
+    backend["controls"].removeMember("channels");
+    Bindings without_channels(input);
+    Runtime missing_channels(0, &controls, without_channels);
+    a = 0;
+    x.clear();
+    assert(missing_channels.acquire({first.selection}, {configuration(1)},
+        {first}, a, x) == -EOPNOTSUPP);
+    gate.removeMember("backend");
+    Bindings unqualified(input);
+    Runtime missing_binding(0, &controls, unqualified);
+    assert(missing_binding.acquire({first.selection}, {configuration(1)},
+        {first}, a, x) == -EOPNOTSUPP);
+    assert(!a && x.empty() && open_pcms.empty());
+}
+
 int main()
 {
+    media_configuration();
     ar_topology::Bindings bindings(fixture());
     auto controls = make_mixer();
     ar_topology::Runtime runtime(0, &controls, bindings);

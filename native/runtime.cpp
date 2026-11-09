@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "ar_topology_runtime.h"
 #include "ar_topology_pcm_controls.h"
+#include "media.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <mutex>
@@ -47,6 +49,8 @@ struct Runtime::Impl {
         std::vector<Control *> controls;
         size_t acquired = 0;
         bool initialized = false;
+        bool managed_media = false;
+        std::map<BackendId, Media> media;
     };
 
     unsigned card;
@@ -120,6 +124,85 @@ struct Runtime::Impl {
         return first;
     }
 
+    int formats(Session &session, const std::vector<HardwareConfig> *hardware,
+                   std::vector<MediaWrite> &writes)
+    {
+        session.managed_media = hardware != nullptr;
+        if (hardware && session.plan.backends.size() !=
+                        session.plan.hardware.size())
+            return -EOPNOTSUPP;
+
+        if (hardware) {
+            for (const auto &config : *hardware) {
+                auto keys = config.selection;
+                std::sort(keys.begin(), keys.end());
+                auto selected = session.plan.selections.find(keys);
+                if (selected == session.plan.selections.end())
+                    return -ENOENT;
+
+                std::set<BackendId> matched;
+
+                for (const auto &[name, backend] : session.plan.backends) {
+                    (void)name;
+                    if (!selected->second.count(backend.graph))
+                        continue;
+
+                    matched.insert(backend.id);
+                    if (matched.size() > 1)
+                        return -EOPNOTSUPP;
+
+                    auto [prior, added] = session.media.emplace(backend.id,
+                                                                config.media);
+                    if (!added && !(prior->second == config.media))
+                        return -EBUSY;
+                }
+
+                if (matched.empty())
+                    return -EINVAL;
+            }
+
+            for (const auto &[name, backend] : session.plan.backends) {
+                (void)name;
+                if (!session.media.count(backend.id))
+                    return -EINVAL;
+            }
+        }
+
+        std::set<BackendId> occupied;
+
+        for (const auto &[id, prior] : sessions) {
+            (void)id;
+            if (!session.plan.hardware.empty() &&
+                !prior.plan.hardware.empty() &&
+                session.managed_media != prior.managed_media)
+                return -EBUSY;
+
+            for (const auto &[port, media] : prior.media) {
+                auto requested = session.media.find(port);
+                if (requested != session.media.end() &&
+                    !(requested->second == media))
+                    return -EBUSY;
+
+                occupied.insert(port);
+            }
+        }
+
+        if (hardware) {
+            for (const auto &[name, backend] : session.plan.backends) {
+                (void)name;
+                if (!occupied.insert(backend.id).second)
+                    continue;
+
+                int status = media_writes(mixer, backend,
+                    session.media.at(backend.id), writes);
+                if (status)
+                    return status;
+            }
+        }
+
+        return 0;
+    }
+
     bool exposes_untuned(const Plan &plan, const std::set<uint32_t> &tuned)
     {
         std::set<std::string> paths = plan.paths;
@@ -191,6 +274,22 @@ int Runtime::acquire(const std::vector<Keys> &requests,
                      const std::vector<Pcm> &pcms,
                      SessionId &id, std::vector<Stream> &streams)
 {
+    return acquire_impl(requests, pcms, nullptr, id, streams);
+}
+
+int Runtime::acquire(const std::vector<Keys> &requests,
+                     const std::vector<Pcm> &pcms,
+                     const std::vector<HardwareConfig> &hardware,
+                     SessionId &id, std::vector<Stream> &streams)
+{
+    return acquire_impl(requests, pcms, &hardware, id, streams);
+}
+
+int Runtime::acquire_impl(const std::vector<Keys> &requests,
+                           const std::vector<Pcm> &pcms,
+                           const std::vector<HardwareConfig> *hardware,
+                           SessionId &id, std::vector<Stream> &streams)
+{
     std::lock_guard<std::mutex> lock(impl->mutex);
 
     if (id || !streams.empty())
@@ -242,6 +341,11 @@ int Runtime::acquire(const std::vector<Keys> &requests,
         if (impl->exposes_untuned(session.plan, tuned))
             return -EOPNOTSUPP;
 
+        std::vector<MediaWrite> media;
+        status = impl->formats(session, hardware, media);
+        if (status)
+            return status;
+
         std::vector<Graph> defaults;
 
         for (const auto &[graph_id, graph] : session.plan.graphs) {
@@ -286,13 +390,20 @@ int Runtime::acquire(const std::vector<Keys> &requests,
         auto &active = found.first->second;
         id = found.first->first;
 
-        for (auto *control : active.controls) {
-            active.acquired++;
+        for (const auto &write : media) {
+            status = result(mixer_ctl_set_value(write.control, 0, write.item));
+            if (status < 0)
+                break;
+        }
 
-            if (control->users++ == 0) {
-                status = result(mixer_ctl_set_value(control->handle, 0, 1));
-                if (status < 0)
-                    break;
+        if (status >= 0) {
+            for (auto *control : active.controls) {
+                active.acquired++;
+                if (control->users++ == 0) {
+                    status = result(mixer_ctl_set_value(control->handle, 0, 1));
+                    if (status < 0)
+                        break;
+                }
             }
         }
 

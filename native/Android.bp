@@ -3,6 +3,7 @@ filegroup {
     srcs: [
         "bindings.cpp",
         "defaults.cpp",
+        "media.cpp",
         "parameters.cpp",
         "pcm_controls.cpp",
         "prepare.cpp",
