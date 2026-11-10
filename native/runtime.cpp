@@ -35,6 +35,29 @@ int state(const Stream &stream)
     return error ? result(error) : int(status.state);
 }
 
+int run_without_host(const Stream &stream)
+{
+    const pcm_config &config = stream.config;
+    snd_pcm_sw_params software{};
+    software.tstamp_mode = SNDRV_PCM_TSTAMP_ENABLE;
+    software.period_step = 1;
+    software.avail_min = config.avail_min ? config.avail_min : 1;
+    software.start_threshold = config.start_threshold;
+    software.stop_threshold = config.stop_threshold;
+    software.silence_threshold = config.silence_threshold;
+    software.silence_size = config.silence_size;
+
+    int status = result(pcm_ioctl(stream.handle, SNDRV_PCM_IOCTL_SW_PARAMS,
+                                  &software));
+    if (status)
+        return status;
+
+    software.stop_threshold = software.boundary;
+
+    return result(pcm_ioctl(stream.handle, SNDRV_PCM_IOCTL_SW_PARAMS,
+                            &software));
+}
+
 }
 
 struct Runtime::Impl {
@@ -402,6 +425,7 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
                 return -EINVAL;
 
             session.streams.push_back({frontend.pcm_id, nullptr});
+            session.streams.back().config = config->config;
         }
 
         if (impl->exposes_untuned(session.plan, tuned))
@@ -781,13 +805,22 @@ int Runtime::start(SessionId id)
             return -EBADFD;
     }
 
-    for (const auto &stream : found->second.streams) {
+    const auto &session = found->second;
+
+    for (size_t i = 0; i < session.streams.size(); i++) {
+        const auto &stream = session.streams[i];
         int value = state(stream);
         if (value < 0)
             return value;
 
         if (value == SNDRV_PCM_STATE_RUNNING)
             continue;
+
+        if (session.plan.frontends[i].mode == FrontendMode::hostless) {
+            int status = run_without_host(stream);
+            if (status)
+                return status;
+        }
 
         int status = result(pcm_ioctl(stream.handle, SNDRV_PCM_IOCTL_START,
                                       nullptr));

@@ -32,6 +32,9 @@ struct pcm {
     int sync_error = 0;
     int dup_error = 0;
     unsigned buffer_frames = 0;
+    pcm_config config{};
+    snd_pcm_uframes_t stop_threshold = 0;
+    snd_pcm_uframes_t avail_min = 0;
 };
 
 struct mixer_ctl {
@@ -160,6 +163,7 @@ extern "C" struct pcm *pcm_open(unsigned, unsigned device, unsigned flags,
     auto *handle = new pcm{device};
     handle->flags = flags;
     handle->buffer_frames = config->period_count * config->period_size;
+    handle->config = *config;
     assert(!pipe2(handle->fds, O_CLOEXEC | O_NONBLOCK));
     open_pcms.insert(handle);
     return handle;
@@ -191,6 +195,23 @@ extern "C" int pcm_ioctl(struct pcm *handle, int request, ...)
 
     if (unsigned(request) == SNDRV_PCM_IOCTL_START)
         return pcm_start(handle);
+    if (unsigned(request) == SNDRV_PCM_IOCTL_ANONYMOUS_DUP) {
+        assert(*static_cast<int *>(data) == SNDRV_PCM_ANON_DUP_BUFFER);
+        if (handle->dup_error) {
+            errno = handle->dup_error;
+            return -1;
+        }
+
+        return __real_open("/dev/null", O_RDWR | O_CLOEXEC);
+    }
+    if (unsigned(request) == SNDRV_PCM_IOCTL_SW_PARAMS) {
+        auto &software = *static_cast<snd_pcm_sw_params *>(data);
+        assert(handle->state != SNDRV_PCM_STATE_RUNNING);
+        software.boundary = snd_pcm_uframes_t(handle->buffer_frames) << 20;
+        handle->stop_threshold = software.stop_threshold;
+        handle->avail_min = software.avail_min;
+        return 0;
+    }
 
     if (unsigned(request) == SNDRV_PCM_IOCTL_SYNC_PTR) {
         if (handle->sync_error) {
@@ -213,6 +234,23 @@ extern "C" int pcm_ioctl(struct pcm *handle, int request, ...)
     assert(unsigned(request) == SNDRV_PCM_IOCTL_STATUS);
     static_cast<snd_pcm_status *>(data)->state = handle->state;
     return 0;
+}
+
+extern "C" int pcm_get_config(struct pcm *handle, struct pcm_config *config)
+{
+    *config = handle->config;
+    return 0;
+}
+
+extern "C" unsigned pcm_get_buffer_size(struct pcm *handle)
+{
+    return handle->buffer_frames;
+}
+
+extern "C" unsigned pcm_frames_to_bytes(struct pcm *handle, unsigned frames)
+{
+    assert(handle->config.format == PCM_FORMAT_S16_LE);
+    return frames * handle->config.channels * 2;
 }
 
 extern "C" int pcm_get_poll_fd(struct pcm *handle)
@@ -861,6 +899,36 @@ int main()
     assert(offload_runtime.open({{{10, 2}}}, {configuration(2)}, offload, d,
                                 initialize, &offload_init) == -EOPNOTSUPP);
     assert(d.empty() && open_pcms.empty());
+
+    auto hostless = fixture();
+    hostless["frontends"][1]["mode"] = "hostless";
+    ar_topology::Bindings hostless_bindings(hostless);
+    ar_topology::Runtime hostless_runtime(0, &controls, hostless_bindings);
+    ar_topology::SessionId silent = 0;
+    auto silent_config = configuration(2);
+    silent_config.config.avail_min = 60;
+    assert(!hostless_runtime.open({{{10, 2}}}, {silent_config}, silent, d,
+                                  initialize, &offload_init));
+    assert(!d[0].handle->stop_threshold);
+    assert(!hostless_runtime.start(silent));
+    assert(d[0].handle->state == SNDRV_PCM_STATE_RUNNING);
+    assert(d[0].handle->stop_threshold ==
+           snd_pcm_uframes_t(d[0].handle->buffer_frames) << 20);
+    assert(d[0].handle->avail_min == 60);
+    assert(!hostless_runtime.stop(silent));
+    assert(!hostless_runtime.close(silent));
+    d.clear();
+    assert(open_pcms.empty());
+
+    ar_topology::SessionId hosted = 0;
+    assert(!runtime.open({{{10, 2}}}, {configuration(2)}, hosted, d,
+                         initialize, &offload_init));
+    assert(!runtime.start(hosted));
+    assert(!d[0].handle->stop_threshold);
+    assert(!runtime.stop(hosted));
+    assert(!runtime.close(hosted));
+    d.clear();
+    assert(open_pcms.empty());
 
     auto duplex = fixture();
     duplex["frontends"][1]["mode"] = "hostless";

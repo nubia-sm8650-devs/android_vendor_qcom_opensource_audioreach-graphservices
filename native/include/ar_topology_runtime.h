@@ -21,6 +21,7 @@ struct Pcm {
 struct Stream {
     uint32_t id;
     struct pcm *handle;
+    pcm_config config{};
 };
 
 using SessionId = uint64_t;
