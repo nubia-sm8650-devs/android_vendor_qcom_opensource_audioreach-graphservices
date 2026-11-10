@@ -122,6 +122,20 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
     return 0;
 }
 
+static std::map<uint32_t, std::pair<ar_topology::Keys, ar_topology::Keys>>
+    calibrated;
+
+static ar_topology::Keys calibration_keys(const AcdbGraphKeyVector &vector)
+{
+    ar_topology::Keys keys;
+
+    for (uint32_t i = 0; i < vector.num_keys; i++)
+        keys.emplace_back(vector.graph_key_vector[i].key,
+                          vector.graph_key_vector[i].value);
+
+    return keys;
+}
+
 extern "C" int32_t acdb_ioctl(uint32_t command, const void *input,
                               uint32_t, void *output, uint32_t)
 {
@@ -130,10 +144,12 @@ extern "C" int32_t acdb_ioctl(uint32_t command, const void *input,
 
     auto *request = static_cast<const AcdbSgIdCalKeyVector *>(input);
     assert(request->num_sg_ids == 1);
-    assert(!request->cal_key_vector_prior.num_keys);
-    assert(!request->cal_key_vector_new.num_keys);
+    auto prior = calibration_keys(request->cal_key_vector_prior);
+    auto next = calibration_keys(request->cal_key_vector_new);
+    calibrated[request->sg_ids[0]] = {prior, next};
     auto *response = static_cast<AcdbBlob *>(output);
-    uint32_t record[] = {0x4001, 0x08001026, 4, 0, request->sg_ids[0], 0};
+    uint32_t record[] = {0x4001, 0x08001026, 4, 0, request->sg_ids[0],
+                         next.empty() ? 0 : next[0].second};
 
     if (response->buf) {
         assert(response->buf_size == sizeof(record));
@@ -662,8 +678,46 @@ static void media_configuration()
     assert(!a && x.empty() && open_pcms.empty());
 }
 
+static void calibration()
+{
+    ar_topology::Bindings bindings(fixture());
+    auto controls = make_mixer();
+    ar_topology::Runtime runtime(0, &controls, bindings);
+    ar_topology::SessionId id = 0;
+    std::vector<ar_topology::Stream> streams;
+    calibrated.clear();
+
+    assert(runtime.acquire({{{10, 1}}}, {configuration(1)}, id, streams,
+                           {{{50, 5}}, {{50, 6}}}) == -EINVAL);
+    assert(!id && streams.empty() && calibrated.empty());
+    assert(!runtime.acquire({{{10, 1}}}, {configuration(1)}, id, streams,
+                            {{{50, 5}}}));
+
+    for (uint32_t subgraph : {0xb0000001u, 0xb0000003u}) {
+        const auto &[prior, next] = calibrated.at(subgraph);
+        assert(prior.empty() && next == ar_topology::Keys({{50, 5}}));
+        const auto &bytes = controls.controls.at(
+            "set" + std::to_string(subgraph & 0xff)).bytes;
+        uint32_t value;
+        std::memcpy(&value, bytes.data() + 28, sizeof(value));
+        assert(value == 5);
+    }
+
+    calibrated.clear();
+    ar_topology::SessionId other = 0;
+    std::vector<ar_topology::Stream> others;
+    assert(!runtime.acquire({{{10, 2}}}, {configuration(2)}, other, others));
+    assert(calibrated.size() == 1);
+    assert(calibrated.at(0xb0000002).first.empty() &&
+           calibrated.at(0xb0000002).second.empty());
+    assert(!runtime.close(other));
+    assert(!runtime.close(id));
+    assert(open_pcms.empty());
+}
+
 int main()
 {
+    calibration();
     media_configuration();
     ar_topology::Bindings bindings(fixture());
     auto controls = make_mixer();

@@ -14,8 +14,6 @@ namespace Json { class Value; }
 namespace ar_topology
 {
 
-using Keys = std::vector<std::pair<uint32_t, uint32_t>>;
-
 enum class FrontendMode { pcm, hostless, compress };
 
 struct Frontend {

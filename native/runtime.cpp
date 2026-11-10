@@ -75,6 +75,8 @@ struct Runtime::Impl {
         bool managed_media = false;
         std::map<BackendId, Media> media;
         std::map<BackendId, std::vector<uint32_t>> channel_maps;
+        std::vector<Keys> selections;
+        std::map<Keys, Keys> calibration;
     };
 
     unsigned card;
@@ -359,27 +361,31 @@ unsigned Runtime::card_id() const
 
 int Runtime::acquire(const std::vector<Keys> &requests,
                      const std::vector<Pcm> &pcms,
-                     SessionId &id, std::vector<Stream> &streams)
+                     SessionId &id, std::vector<Stream> &streams,
+                     const std::vector<Keys> &calibration)
 {
-    return acquire_impl(requests, pcms, nullptr, id, streams);
+    return acquire_impl(requests, pcms, nullptr, id, streams, calibration);
 }
 
 int Runtime::acquire(const std::vector<Keys> &requests,
                      const std::vector<Pcm> &pcms,
                      const std::vector<HardwareConfig> &hardware,
-                     SessionId &id, std::vector<Stream> &streams)
+                     SessionId &id, std::vector<Stream> &streams,
+                     const std::vector<Keys> &calibration)
 {
-    return acquire_impl(requests, pcms, &hardware, id, streams);
+    return acquire_impl(requests, pcms, &hardware, id, streams, calibration);
 }
 
 int Runtime::acquire_impl(const std::vector<Keys> &requests,
                            const std::vector<Pcm> &pcms,
                            const std::vector<HardwareConfig> *hardware,
-                           SessionId &id, std::vector<Stream> &streams)
+                           SessionId &id, std::vector<Stream> &streams,
+                           const std::vector<Keys> &calibration)
 {
     std::lock_guard<std::mutex> lock(impl->mutex);
 
-    if (id || !streams.empty())
+    if (id || !streams.empty() ||
+        (!calibration.empty() && calibration.size() != requests.size()))
         return -EINVAL;
 
     try {
@@ -442,11 +448,31 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         if (status)
             return status;
 
-        std::vector<Graph> defaults;
+        for (size_t i = 0; i < requests.size(); i++) {
+            auto selection = requests[i];
+            std::sort(selection.begin(), selection.end());
+
+            Keys keys = calibration.empty() ? Keys{} : calibration[i];
+            auto [found, added] = session.calibration.emplace(selection, keys);
+            if (added)
+                session.selections.push_back(selection);
+            else if (found->second != keys)
+                return -EINVAL;
+        }
+
+        std::vector<Calibration> defaults;
 
         for (const auto &[graph_id, graph] : session.plan.graphs) {
-            if (!tuned.count(graph_id))
-                defaults.push_back(graph);
+            if (tuned.count(graph_id))
+                continue;
+
+            for (const auto &selection : session.selections) {
+                if (session.plan.selections.at(selection).count(graph_id)) {
+                    defaults.push_back({graph, {},
+                                        session.calibration.at(selection)});
+                    break;
+                }
+            }
         }
 
         for (const auto *names : {&session.plan.references, &session.plan.paths,

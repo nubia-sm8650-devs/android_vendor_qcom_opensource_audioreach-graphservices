@@ -35,10 +35,12 @@ public:
     ~Runtime();
     unsigned card_id() const;
     int acquire(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,
-                 SessionId &id, std::vector<Stream> &streams);
+                 SessionId &id, std::vector<Stream> &streams,
+                 const std::vector<Keys> &calibration = {});
     int acquire(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,
                   const std::vector<HardwareConfig> &hardware, SessionId &id,
-                  std::vector<Stream> &streams);
+                  std::vector<Stream> &streams,
+                  const std::vector<Keys> &calibration = {});
     int prepare(SessionId id, Configure configure = nullptr,
                  void *context = nullptr);
     int prepare_parameters(SessionId id, ConfigureParameters configure,
@@ -67,7 +69,8 @@ private:
                       const std::vector<Pcm> &pcms,
                       const std::vector<HardwareConfig> *hardware,
                       SessionId &id,
-                      std::vector<Stream> &streams);
+                      std::vector<Stream> &streams,
+                      const std::vector<Keys> &calibration);
     int prepare_impl(SessionId id, Configure configure,
                       ConfigureParameters parameters, void *context);
     struct Impl;

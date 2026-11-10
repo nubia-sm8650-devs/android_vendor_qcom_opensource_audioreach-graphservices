@@ -10,12 +10,41 @@
 namespace ar_topology
 {
 
+namespace {
+
+AcdbGraphKeyVector vector(const Keys &keys, std::vector<AcdbKeyValuePair> &pairs)
+{
+    pairs.clear();
+
+    for (const auto &[key, value] : keys)
+        pairs.push_back({key, value});
+
+    return {uint32_t(pairs.size()), pairs.empty() ? nullptr : pairs.data()};
+}
+
+}
+
 int read_defaults(uint32_t subgraph, std::vector<uint8_t> &data)
 {
+    return read_calibration(subgraph, {}, {}, data);
+}
+
+int read_calibration(uint32_t subgraph, const Keys &prior, const Keys &next,
+                     std::vector<uint8_t> &data)
+{
     data.clear();
+    std::vector<AcdbKeyValuePair> prior_pairs, next_pairs;
     AcdbSgIdCalKeyVector request{};
     request.num_sg_ids = 1;
     request.sg_ids = &subgraph;
+
+    try {
+        request.cal_key_vector_prior = vector(prior, prior_pairs);
+        request.cal_key_vector_new = vector(next, next_pairs);
+    } catch (const std::bad_alloc &) {
+        return -ENOMEM;
+    }
+
     AcdbGlbPsistIdentifierList global{};
     int status = acdb_ioctl(ACDB_CMD_GET_SUBGRAPH_GLB_PSIST_IDENTIFIERS,
                             &request, sizeof(request), &global, sizeof(global));

@@ -50,7 +50,22 @@ int prepare(struct pcm *pcm, struct mixer *mixer,
     return status == -1 ? -errno : status;
 }
 
-int tune(struct mixer *mixer, const std::vector<Graph> &new_graphs)
+int tune(struct mixer *mixer, const std::vector<Graph> &new_graphs,
+         const Keys &prior, const Keys &next)
+{
+    try {
+        std::vector<Calibration> calibrations;
+
+        for (const auto &graph : new_graphs)
+            calibrations.push_back({graph, prior, next});
+
+        return tune(mixer, calibrations);
+    } catch (const std::bad_alloc &) {
+        return -ENOMEM;
+    }
+}
+
+int tune(struct mixer *mixer, const std::vector<Calibration> &calibrations)
 {
     if (!mixer)
         return -EINVAL;
@@ -65,7 +80,7 @@ int tune(struct mixer *mixer, const std::vector<Graph> &new_graphs)
         std::set<uint32_t> subgraphs;
         std::set<std::string> controls;
 
-        for (const auto &graph : new_graphs) {
+        for (const auto &[graph, prior, next] : calibrations) {
             if (!subgraphs.insert(graph.subgraph).second ||
                 !controls.insert(graph.set_control).second)
                 return -EINVAL;
@@ -80,7 +95,7 @@ int tune(struct mixer *mixer, const std::vector<Graph> &new_graphs)
                 return -EINVAL;
 
             std::vector<uint8_t> data;
-            int status = read_defaults(graph.subgraph, data);
+            int status = read_calibration(graph.subgraph, prior, next, data);
             if (status)
                 return status;
 
