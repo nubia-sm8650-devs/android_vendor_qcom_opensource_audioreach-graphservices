@@ -13,6 +13,7 @@
 #include <ar_osal_error.h>
 #include <json/json.h>
 #include <sound/asound.h>
+#include <sound/compress_offload.h>
 #include <sound/snd_ar_tokens.h>
 #include <apm_api.h>
 
@@ -61,6 +62,12 @@ static int rejected_stop = -1;
 static int rejected_open = -1;
 static pcm bad_pcm{UINT32_MAX};
 static int control_fd = -1;
+static int compress_fd = -1;
+static std::string compress_path;
+static snd_compr_params compress_params{};
+static std::vector<unsigned> compress_commands;
+static mixer *compress_mixer;
+static bool tuned_before_params;
 static mixer *backend_mixer;
 static unsigned backend_rate;
 static std::string backend_data_format;
@@ -71,6 +78,14 @@ extern "C" int __real_open(const char *, int, ...);
 
 extern "C" int __wrap_open(const char *path, int flags, ...)
 {
+    if (!std::strncmp(path, "/dev/snd/comprC", 15)) {
+        assert(compress_fd < 0 && (flags & O_ACCMODE) == O_WRONLY);
+        compress_path = path;
+        compress_fd = __real_open("/dev/null", flags);
+        assert(compress_fd >= 0);
+        return compress_fd;
+    }
+
     assert(!std::strcmp(path, "/dev/snd/controlC0"));
     control_fd = __real_open("/dev/null", flags);
     assert(control_fd >= 0);
@@ -79,11 +94,27 @@ extern "C" int __wrap_open(const char *path, int flags, ...)
 
 extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 {
-    assert(fd == control_fd);
     va_list args;
     va_start(args, command);
     void *data = va_arg(args, void *);
     va_end(args);
+
+    if (fd == compress_fd) {
+        compress_commands.push_back(command);
+
+        if (command == SNDRV_COMPRESS_SET_PARAMS) {
+            compress_params = *static_cast<snd_compr_params *>(data);
+            tuned_before_params =
+                !compress_mixer->controls.at("set2").bytes.empty();
+            return 0;
+        }
+
+        assert(command == SNDRV_COMPRESS_STOP);
+        errno = EPERM;
+        return -1;
+    }
+
+    assert(fd == control_fd);
 
     if (command == SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS) {
         assert(*static_cast<int *>(data) == 1);
@@ -483,7 +514,7 @@ static int initialize(void *opaque,
     auto &value = *static_cast<Initialization *>(opaque);
 
     for (const auto &stream : streams)
-        assert(stream.handle->state == SNDRV_PCM_STATE_SETUP);
+        assert(!stream.handle || stream.handle->state == SNDRV_PCM_STATE_SETUP);
 
     for (unsigned id : value.defaults) {
         const auto &data = value.controls.controls.at("set" +
@@ -1021,8 +1052,46 @@ int main()
     std::vector<ar_topology::Stream> d;
     Initialization offload_init{controls, {2, 3}};
     assert(offload_runtime.open({{{10, 2}}}, {configuration(2)}, offload, d,
-                                initialize, &offload_init) == -EOPNOTSUPP);
+                                initialize, &offload_init) == -EINVAL);
     assert(d.empty() && open_pcms.empty());
+    auto offload_config = configuration(2);
+    snd_compr_params params{};
+    params.buffer.fragment_size = 4096;
+    params.buffer.fragments = 4;
+    params.codec.id = SND_AUDIOCODEC_MP3;
+    params.codec.sample_rate = 44100;
+    offload_config.compress = params;
+    compress_mixer = &controls;
+    controls.controls.at("set2").bytes.clear();
+    assert(!offload_runtime.acquire({{{10, 2}}}, {offload_config}, offload, d));
+    assert(d.size() == 1 && !d[0].handle && d[0].compress == compress_fd);
+    assert(compress_path == "/dev/snd/comprC0D2" && open_pcms.empty());
+    assert(compress_commands.empty());
+    assert(offload_runtime.start(offload) == -EBADFD);
+    assert(!offload_runtime.prepare(offload, initialize, &offload_init));
+    assert((compress_commands == std::vector<unsigned>{
+        SNDRV_COMPRESS_SET_PARAMS}));
+    assert(tuned_before_params);
+    assert(compress_params.codec.id == SND_AUDIOCODEC_MP3 &&
+           compress_params.buffer.fragments == 4);
+    assert(!offload_runtime.prepare(offload) && compress_commands.size() == 1);
+    assert(!offload_runtime.start(offload));
+    int borrowed = -1;
+    assert(!offload_runtime.compress_fd(offload, 2, borrowed));
+    assert(borrowed == compress_fd);
+    assert(offload_runtime.pcm_poll_fd(offload, 2, borrowed) == -EOPNOTSUPP);
+    int exported = -1;
+    uint32_t exported_bytes = 0;
+    assert(offload_runtime.export_buffer(offload, 2, exported,
+                                         exported_bytes) == -EOPNOTSUPP);
+    assert(!offload_runtime.stop(offload));
+    assert(compress_commands.back() == SNDRV_COMPRESS_STOP);
+    int closing = compress_fd;
+    assert(!offload_runtime.close(offload));
+    assert(fcntl(closing, F_GETFD) == -1 && errno == EBADF);
+    compress_fd = -1;
+    d.clear();
+    assert(runtime.compress_fd(first, 1, borrowed) == -ENOENT);
 
     auto hostless = fixture();
     hostless["frontends"][1]["mode"] = "hostless";

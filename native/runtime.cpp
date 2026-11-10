@@ -9,8 +9,11 @@
 #include <mutex>
 #include <new>
 #include <stdexcept>
+#include <fcntl.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
 #include <sound/asound.h>
+#include <sound/compress_offload.h>
 
 #ifndef SNDRV_PCM_IOCTL_ANONYMOUS_DUP
 #define SNDRV_PCM_ANON_DUP_BUFFER 1
@@ -25,6 +28,17 @@ namespace
 int result(int status)
 {
     return status == -1 ? -errno : status;
+}
+
+int open_compress(unsigned card, uint32_t device)
+{
+    char path[32];
+
+    snprintf(path, sizeof(path), "/dev/snd/comprC%uD%u", card, device);
+
+    int fd = ::open(path, O_WRONLY | O_CLOEXEC);
+
+    return fd < 0 ? -errno : fd;
 }
 
 int state(const Stream &stream)
@@ -77,6 +91,9 @@ struct Runtime::Impl {
         std::map<BackendId, std::vector<uint32_t>> channel_maps;
         std::vector<Keys> selections;
         std::map<Keys, Keys> calibration;
+        bool compress = false;
+        snd_compr_params params{};
+        bool configured = false;
     };
 
     unsigned card;
@@ -124,6 +141,11 @@ struct Runtime::Impl {
         int first = 0;
 
         for (auto &stream : session.streams) {
+            if (stream.compress >= 0) {
+                ::close(stream.compress);
+                stream.compress = -1;
+            }
+
             if (!stream.handle)
                 continue;
 
@@ -415,8 +437,13 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         std::vector<const Pcm *> configs;
 
         for (const auto &frontend : session.plan.frontends) {
-            if (frontend.mode == FrontendMode::compress)
+            if (frontend.mode != FrontendMode::compress)
+                continue;
+
+            if (session.plan.frontends.size() != 1 || frontend.capture)
                 return -EOPNOTSUPP;
+
+            session.compress = true;
         }
 
         for (const auto &frontend : session.plan.frontends) {
@@ -432,8 +459,12 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
             }
 
             if (!config ||
-                !requested.emplace(config->id, frontend.capture).second)
+                !requested.emplace(config->id, frontend.capture).second ||
+                config->compress.has_value() != session.compress)
                 return -EINVAL;
+
+            if (session.compress)
+                session.params = *config->compress;
 
             configs.push_back(config);
             session.streams.push_back({frontend.pcm_id, nullptr});
@@ -536,6 +567,17 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
                 auto &stream = active.streams[i];
                 auto config = configs[i]->config;
 
+                if (active.compress) {
+                    stream.compress = open_compress(impl->card, configs[i]->id);
+                    if (stream.compress < 0) {
+                        status = stream.compress;
+                        stream.compress = -1;
+                        break;
+                    }
+
+                    continue;
+                }
+
                 stream.handle = pcm_open(impl->card, configs[i]->id,
                                           configs[i]->flags, &config);
 
@@ -556,8 +598,10 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
             return status;
         }
 
-        for (size_t i = 0; i < output.size(); i++)
+        for (size_t i = 0; i < output.size(); i++) {
             output[i].handle = active.streams[i].handle;
+            output[i].compress = active.streams[i].compress;
+        }
 
         streams = std::move(output);
 
@@ -593,6 +637,9 @@ int Runtime::prepare_impl(SessionId id, Configure configure,
         return map_status;
 
     for (const auto &stream : session.streams) {
+        if (session.compress)
+            break;
+
         int value = state(stream);
         if (value < 0)
             return value;
@@ -610,6 +657,20 @@ int Runtime::prepare_impl(SessionId id, Configure configure,
             return status;
 
         session.initialized = true;
+    }
+
+    if (session.compress) {
+        if (session.configured)
+            return 0;
+
+        int status = result(::ioctl(session.streams[0].compress,
+                                    SNDRV_COMPRESS_SET_PARAMS, &session.params));
+        if (status)
+            return status;
+
+        session.configured = true;
+
+        return 0;
     }
 
     for (const auto &stream : session.streams) {
@@ -713,6 +774,9 @@ int Runtime::export_buffer(SessionId id, uint32_t pcm, int &fd, uint32_t &bytes)
         if (stream.id != pcm)
             continue;
 
+        if (!stream.handle)
+            return -EOPNOTSUPP;
+
         int mode = SNDRV_PCM_ANON_DUP_BUFFER;
         status = result(pcm_ioctl(stream.handle,
                                   SNDRV_PCM_IOCTL_ANONYMOUS_DUP, &mode));
@@ -761,6 +825,9 @@ int Runtime::sync_pcm(SessionId id, uint32_t pcm, struct snd_pcm_sync_ptr &sync)
         if (stream.id != pcm)
             continue;
 
+        if (!stream.handle)
+            return -EOPNOTSUPP;
+
         auto output = sync;
         status = result(pcm_ioctl(stream.handle, SNDRV_PCM_IOCTL_SYNC_PTR,
                                   &output));
@@ -784,6 +851,9 @@ int Runtime::pcm_poll_fd(SessionId id, uint32_t pcm, int &fd)
     for (const auto &stream : impl->sessions.at(id).streams) {
         if (stream.id != pcm)
             continue;
+
+        if (!stream.handle)
+            return -EOPNOTSUPP;
 
         int value = pcm_get_poll_fd(stream.handle);
         if (value < 0)
@@ -853,6 +923,29 @@ int Runtime::subscribe_events(SessionId id, uint32_t pcm, int &fd)
     return status ? status : subscribe_pcm_events(impl->card, pcm, capture, fd);
 }
 
+int Runtime::compress_fd(SessionId id, uint32_t pcm, int &fd)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    bool capture;
+    int status = impl->frontend(id, pcm, capture);
+    if (status)
+        return status;
+
+    for (const auto &stream : impl->sessions.at(id).streams) {
+        if (stream.id != pcm)
+            continue;
+
+        if (stream.compress < 0)
+            return -EOPNOTSUPP;
+
+        fd = stream.compress;
+
+        return 0;
+    }
+
+    return -ENOENT;
+}
+
 int Runtime::start(SessionId id)
 {
     std::lock_guard<std::mutex> lock(impl->mutex);
@@ -863,6 +956,9 @@ int Runtime::start(SessionId id)
     int map_status = impl->validate_maps(found->second);
     if (map_status)
         return map_status;
+
+    if (found->second.compress)
+        return found->second.configured ? 0 : -EBADFD;
 
     for (const auto &stream : found->second.streams) {
         int value = state(stream);
@@ -910,7 +1006,11 @@ int Runtime::stop(SessionId id)
     int first = 0;
 
     for (const auto &stream : found->second.streams) {
-        int status = result(pcm_stop(stream.handle));
+        int status = stream.handle ? result(pcm_stop(stream.handle)) :
+            result(::ioctl(stream.compress, SNDRV_COMPRESS_STOP));
+        if (status == -EPERM && !stream.handle)
+            status = 0;
+
         if (status && !first)
             first = status;
     }

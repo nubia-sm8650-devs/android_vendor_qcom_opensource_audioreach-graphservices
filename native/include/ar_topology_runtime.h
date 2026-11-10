@@ -5,6 +5,8 @@
 #include "ar_topology_parameters.h"
 #include "ar_topology_media.h"
 
+#include <optional>
+#include <sound/compress_offload.h>
 #include <tinyalsa/asoundlib.h>
 
 struct snd_pcm_sync_ptr;
@@ -16,11 +18,13 @@ struct Pcm {
     uint32_t id;
     unsigned flags;
     pcm_config config;
+    std::optional<snd_compr_params> compress = std::nullopt;
 };
 
 struct Stream {
     uint32_t id;
     struct pcm *handle;
+    int compress = -1;
     pcm_config config{};
 };
 
@@ -58,6 +62,7 @@ public:
     int register_events(SessionId id, const void *data, size_t size);
     int read_event(SessionId id, uint32_t pcm, std::vector<uint8_t> &data);
     int subscribe_events(SessionId id, uint32_t pcm, int &fd);
+    int compress_fd(SessionId id, uint32_t pcm, int &fd);
     int start(SessionId id);
     int stop(SessionId id);
     int open(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,
