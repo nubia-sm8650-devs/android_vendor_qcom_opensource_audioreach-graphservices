@@ -88,7 +88,9 @@ selector remains unknown and blocks qualification if a candidate requires it.
 ## Corpus declarations
 
 Use `--exports DIRECTORY --corpus --output topology.conf` to lower a corpus
-into one topology. `--graph-id` supplies the first graph ID. Each invariant
+into one topology. With `--acdb FILE ...` and no `--key`, corpus mode
+queries every graph key vector the ACDB defines instead of reading exports.
+`--graph-id` supplies the first graph ID. Each invariant
 native subgraph gets its own graph ID; native subgraph, container and module
 identities are retained. Conflicting subgraph or hardware definitions block
 output rather than selecting a default variant.
