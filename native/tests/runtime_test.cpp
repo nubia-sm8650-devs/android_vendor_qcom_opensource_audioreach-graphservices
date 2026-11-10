@@ -710,8 +710,30 @@ static void calibration()
     assert(calibrated.size() == 1);
     assert(calibrated.at(0xb0000002).first.empty() &&
            calibrated.at(0xb0000002).second.empty());
+    calibrated.clear();
+    assert(!runtime.set_calibration(id, {}, {{50, 7}}));
+    assert(calibrated.size() == 2);
+
+    for (uint32_t subgraph : {0xb0000001u, 0xb0000003u}) {
+        const auto &[prior, next] = calibrated.at(subgraph);
+        assert(prior == ar_topology::Keys({{50, 5}}) &&
+               next == ar_topology::Keys({{50, 7}}));
+    }
+
+    calibrated.clear();
+    assert(runtime.set_calibration(id, {{10, 1}}, {{50, 8}, {51, 1}}) ==
+           -EINVAL);
+    assert(runtime.set_calibration(id, {{10, 2}}, {{50, 8}}) == -EINVAL);
+    assert(calibrated.empty());
+    controls.controls.at("set3").reject_parameters = true;
+    assert(runtime.set_calibration(id, {{10, 1}}, {{50, 8}}));
+    controls.controls.at("set3").reject_parameters = false;
+    calibrated.clear();
+    assert(!runtime.set_calibration(id, {{10, 1}}, {{50, 9}}));
+    assert(calibrated.at(0xb0000003).first == ar_topology::Keys({{50, 7}}));
     assert(!runtime.close(other));
     assert(!runtime.close(id));
+    assert(runtime.set_calibration(id, {}, {{50, 1}}) == -ENOENT);
     assert(open_pcms.empty());
 }
 

@@ -658,6 +658,46 @@ int Runtime::set_tagged_parameters(SessionId id, const Keys &gkv, uint32_t tag,
     return writer.set(data.data(), data.size());
 }
 
+int Runtime::set_calibration(SessionId id, const Keys &gkv, const Keys &ckv)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    auto found = impl->sessions.find(id);
+    if (found == impl->sessions.end())
+        return -ENOENT;
+
+    auto &session = found->second;
+
+    try {
+        auto selection = gkv;
+        std::sort(selection.begin(), selection.end());
+
+        if (selection.empty() && !session.selections.empty())
+            selection = session.selections.front();
+
+        auto cached = session.calibration.find(selection);
+        if (cached == session.calibration.end())
+            return -EINVAL;
+
+        if (!ckv.empty() && !cached->second.empty() &&
+            ckv.size() != cached->second.size())
+            return -EINVAL;
+
+        std::vector<Calibration> calibrations;
+
+        for (uint32_t graph_id : session.plan.selections.at(selection))
+            calibrations.push_back({session.plan.graphs.at(graph_id),
+                                    cached->second, ckv});
+
+        int status = tune(impl->mixer, calibrations);
+        if (!status && !ckv.empty())
+            cached->second = ckv;
+
+        return status;
+    } catch (const std::bad_alloc &) {
+        return -ENOMEM;
+    }
+}
+
 int Runtime::export_buffer(SessionId id, uint32_t pcm, int &fd, uint32_t &bytes)
 {
     std::lock_guard<std::mutex> lock(impl->mutex);

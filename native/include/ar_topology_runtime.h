@@ -49,6 +49,7 @@ public:
                         size_t *applied = nullptr);
     int set_tagged_parameters(SessionId id, const Keys &gkv, uint32_t tag,
                                 const Keys &tkv);
+    int set_calibration(SessionId id, const Keys &gkv, const Keys &ckv);
     int export_buffer(SessionId id, uint32_t pcm, int &fd, uint32_t &bytes);
     int sync_pcm(SessionId id, uint32_t pcm, struct snd_pcm_sync_ptr &sync);
     int pcm_poll_fd(SessionId id, uint32_t pcm, int &fd);
