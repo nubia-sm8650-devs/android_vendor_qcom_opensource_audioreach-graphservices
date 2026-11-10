@@ -1251,6 +1251,33 @@ class CompilerTest(unittest.TestCase):
         self.assertTrue(endpoint["binding"]["required_runtime_format"])
         self.assertEqual(endpoint["tag_parameters"][0]["parameters"][0]
                          ["payload"], words(0, 0x2221, 0).hex())
+
+        links = self.root / "links.json"
+        links.write_text(json.dumps(report["board"]["links"]))
+        topology = self.output.read_bytes()
+        link_options = options[:-2] + ["--board-links", str(links)]
+        completed = self.run_compiler(source, *link_options, "--device", "BTIN")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(self.output.read_bytes(), topology)
+        linked = json.loads(self.report.read_text())
+        self.assertEqual(linked["factored"], report["factored"])
+        self.assertEqual(linked["board"]["links"], report["board"]["links"])
+        self.assertNotIn("dtb", linked["board"])
+
+        for change in [lambda value: value[0].update(dai=120),
+                       lambda value: value[0].update(extra=1),
+                       lambda value: value.append(dict(value[0])),
+                       lambda value: value.clear()]:
+            invalid = json.loads(json.dumps(report["board"]["links"]))
+            change(invalid)
+            links.write_text(json.dumps(invalid))
+            completed = self.run_compiler(source, *link_options,
+                                          "--device", "BTIN")
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+
+        completed = self.run_compiler(source, *options, "--board-links",
+                                      str(links), "--device", "BTIN")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
         original_dts = dts.read_text()
         dts.write_text(original_dts.replace("disabled {", '''extra_bt {
             link-name = "Other BT Capture";

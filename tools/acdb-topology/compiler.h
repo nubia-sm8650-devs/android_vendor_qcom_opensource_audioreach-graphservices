@@ -59,7 +59,8 @@ void qualify_selections(Json::Value &factored, const Json::Value &contexts);
 void describe_endpoints(Json::Value &factored, const Json::Value &board);
 void bind_hardware(Json::Value &endpoints, const Json::Value &board);
 Json::Value read_board(const std::string &resources,
-                       const std::string &usecases, const std::string &dtb);
+                       const std::string &usecases, const std::string &dtb,
+                       const Json::Value &links);
 
 }
 

@@ -41,7 +41,7 @@ int main(int argc, char **argv)
         acdb_topology::Keys keys;
         std::set<uint32_t> key_ids;
         std::string exports, input, output, report;
-        std::string resources, usecases, dtb, selection_contexts;
+        std::string resources, usecases, dtb, board_links, selection_contexts;
         std::string hardware_widgets, pcm_bindings, bindings_output;
         Json::Value context(Json::objectValue), devices(Json::arrayValue);
         uint32_t graph_id = 0;
@@ -56,7 +56,7 @@ int main(int argc, char **argv)
                           << "  [--graph-id ID] [--output TOPOLOGY.conf]\n"
                           << "  [--corpus]\n"
                           << "  [--resource-manager XML --usecase-kv XML\n"
-                          << "   --board-dtb DTB]\n"
+                          << "   (--board-dtb DTB | --board-links FILE)]\n"
                           << "  [--device PAL_DEVICE ... --stream-type TYPE\n"
                           << "   --device-pp-type TYPE\n"
                           << "   --context NAME=VALUE ...]\n"
@@ -104,6 +104,8 @@ int main(int argc, char **argv)
                 usecases = value;
             else if (option == "--board-dtb")
                 dtb = value;
+            else if (option == "--board-links")
+                board_links = value;
             else if (option == "--device")
                 devices.append(value);
             else if (option == "--selection-contexts")
@@ -138,8 +140,11 @@ int main(int argc, char **argv)
             (!exports.empty() && !output.empty() && !corpus))
             throw std::runtime_error("Invalid options; use --help");
 
+        if (!dtb.empty() && !board_links.empty())
+            throw std::runtime_error("Supply either a board DTB or board links");
+
         int board_inputs = int(!resources.empty()) + int(!usecases.empty()) +
-                           int(!dtb.empty());
+                           int(!dtb.empty() || !board_links.empty());
         if (board_inputs && board_inputs != 3)
             throw std::runtime_error("Supply all three board inputs");
 
@@ -165,7 +170,8 @@ int main(int argc, char **argv)
         Json::Value board;
 
         if (board_inputs)
-            board = acdb_topology::read_board(resources, usecases, dtb);
+            board = acdb_topology::read_board(resources, usecases, dtb,
+                board_links.empty() ? Json::Value() : read_json(board_links));
 
         if (!context.empty())
             board["context"] = context;

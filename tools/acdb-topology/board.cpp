@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <libfdt.h>
@@ -410,18 +411,76 @@ Json::Value board_links(const std::string &path)
     return result;
 }
 
+Json::Value checked_links(const Json::Value &input)
+{
+    if (!input.isArray() || input.empty())
+        throw std::runtime_error("Board links must be a non-empty array");
+
+    static const std::set<std::string> fields{"path", "name", "provider",
+                                              "dai", "transport"};
+    std::set<std::string> paths;
+    Json::Value result(Json::arrayValue);
+
+    for (const auto &entry : input) {
+        if (!entry.isObject())
+            throw std::runtime_error("Board link must be an object");
+
+        for (const auto &field : entry.getMemberNames()) {
+            if (!fields.count(field))
+                throw std::runtime_error("Unknown board link field " + field);
+        }
+
+        for (const char *field : {"path", "name", "provider"}) {
+            if (!entry[field].isString() || entry[field].asString().empty())
+                throw std::runtime_error(std::string("Invalid board link ") +
+                                         field);
+        }
+
+        if (!entry["dai"].isUInt())
+            throw std::runtime_error("Invalid board link DAI");
+
+        Json::Value link;
+        link["path"] = entry["path"];
+        link["name"] = entry["name"];
+        link["provider"] = entry["provider"];
+        link["dai"] = entry["dai"];
+        link["transport"] = dai_transport(entry["dai"].asUInt());
+
+        Json::StreamWriterBuilder writer;
+        writer["indentation"] = "";
+
+        if (entry.isMember("transport") &&
+            Json::writeString(writer, entry["transport"]) !=
+            Json::writeString(writer, link["transport"]))
+            throw std::runtime_error("Board link transport differs from its DAI");
+
+        if (!paths.insert(link["path"].asString()).second)
+            throw std::runtime_error("Repeated board link path");
+
+        result.append(link);
+    }
+
+    return result;
+}
+
 }
 
 Json::Value read_board(const std::string &resources,
-                       const std::string &usecases, const std::string &dtb)
+                       const std::string &usecases, const std::string &dtb,
+                       const Json::Value &links)
 {
     auto rm = document(resources, "resource_manager_info");
     auto kv = document(usecases, "graph_key_value_pair_info");
     Json::Value result;
     result["resource_manager"] = resources;
     result["usecase_kv"] = usecases;
-    result["dtb"] = dtb;
-    result["links"] = board_links(dtb);
+    if (dtb.empty()) {
+        result["links"] = checked_links(links);
+    } else {
+        result["dtb"] = dtb;
+        result["links"] = board_links(dtb);
+    }
+
     result["profiles"] = Json::Value(Json::arrayValue);
     result["assignments"] = Json::Value(Json::arrayValue);
     bool haptics_wsa = haptics_over_wsa(xmlDocGetRootElement(rm.get()));
