@@ -151,6 +151,17 @@ lock. A failed batch may leave an acknowledged prefix applied. These APIs
 do not register persistent data or infer ownership for service-target IIDs
 3 and 4, which return `-EOPNOTSUPP`.
 
+## Calibration keys
+
+`Runtime::acquire()` takes optional calibration keys for each requested
+selection. Newly acquired graphs receive ACDB calibration for the keys of the
+first selection that reaches them, and the session keeps each selection's
+keys. `Runtime::set_calibration()` sends the calibration that differs between
+a selection's kept keys and new ones to every graph of that selection, or of
+the first selection when the graph keys are empty. New keys must have as many
+keys as the kept ones and are kept only after they are sent, as stock
+`gsl_set_cal()` does.
+
 ## Managed backend media
 
 Use the `Runtime::acquire()` overload accepting `HardwareConfig` records to
