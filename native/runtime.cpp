@@ -383,6 +383,9 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         for (const auto &frontend : session.plan.frontends) {
             const Pcm *config = nullptr;
 
+            if (frontend.mode == FrontendMode::compress)
+                return -EOPNOTSUPP;
+
             if (occupied.count(frontend.pcm_id))
                 return -EBUSY;
 

@@ -850,4 +850,15 @@ int main()
     assert(runtime.sync_pcm(first, 1, sync) == -ENOENT);
     int rejected_fd = -1;
     assert(runtime.pcm_poll_fd(first, 1, rejected_fd) == -ENOENT);
+
+    auto compressed = fixture();
+    compressed["frontends"][1]["mode"] = "compress";
+    ar_topology::Bindings offload_bindings(compressed);
+    ar_topology::Runtime offload_runtime(0, &controls, offload_bindings);
+    ar_topology::SessionId offload = 0;
+    std::vector<ar_topology::Stream> d;
+    Initialization offload_init{controls, {2, 3}};
+    assert(offload_runtime.open({{{10, 2}}}, {configuration(2)}, offload, d,
+                                initialize, &offload_init) == -EOPNOTSUPP);
+    assert(d.empty() && open_pcms.empty());
 }

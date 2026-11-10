@@ -171,11 +171,16 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
         uint32_t root = number(frontend["graph_id"]);
         std::string direction = text(frontend["direction"]);
         std::string mode = text(frontend["mode"]);
+        static const std::map<std::string, FrontendMode> modes{
+            {"pcm", FrontendMode::pcm},
+            {"hostless", FrontendMode::hostless},
+            {"compress", FrontendMode::compress}};
+        auto found = modes.find(mode);
         if (!impl->graphs.count(root) || !roots.insert(root).second ||
             (direction != "playback" && direction != "capture") ||
-            (mode != "pcm" && mode != "hostless") ||
+            found == modes.end() ||
             !impl->frontends.emplace(id, Frontend{id, root,
-                direction == "capture"}).second)
+                direction == "capture", found->second}).second)
             throw std::invalid_argument("Invalid frontend binding");
     }
 

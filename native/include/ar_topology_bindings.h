@@ -16,10 +16,13 @@ namespace ar_topology
 
 using Keys = std::vector<std::pair<uint32_t, uint32_t>>;
 
+enum class FrontendMode { pcm, hostless, compress };
+
 struct Frontend {
     uint32_t pcm_id;
     uint32_t graph_id;
     bool capture;
+    FrontendMode mode = FrontendMode::pcm;
 };
 
 struct Reference {

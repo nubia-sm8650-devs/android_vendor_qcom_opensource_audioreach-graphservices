@@ -158,6 +158,26 @@ int main(int argc, char **argv)
     ar_topology::Bindings capture(input);
     assert(!capture.select({{{10, 1}}, {{10, 2}}}, plan));
     assert(plan.frontends.size() == 1 && plan.frontends[0].capture);
+    assert(plan.frontends[0].mode == ar_topology::FrontendMode::pcm);
+
+    for (const char *mode : {"hostless", "compress", "mmap"}) {
+        auto modal = input;
+        modal["frontends"][0]["mode"] = mode;
+        bool accepted = true;
+
+        try {
+            ar_topology::Bindings bindings(modal);
+            assert(!bindings.select({{{10, 1}}, {{10, 2}}}, plan));
+            assert(plan.frontends[0].mode ==
+                   (std::string(mode) == "hostless" ?
+                    ar_topology::FrontendMode::hostless :
+                    ar_topology::FrontendMode::compress));
+        } catch (const std::invalid_argument &) {
+            accepted = false;
+        }
+
+        assert(accepted == (std::string(mode) != "mmap"));
+    }
 
     Json::Value extra(Json::arrayValue);
     extra.append("0x1");
