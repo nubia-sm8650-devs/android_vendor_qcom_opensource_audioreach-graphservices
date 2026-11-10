@@ -66,8 +66,10 @@ Call `Runtime::open()` with graph-key vectors and explicit Tinyalsa PCM
 configurations for every selected frontend. Start with a zero session ID
 and an empty stream vector. The runtime reserves frontend roots, shares
 controls, opens all PCMs, applies defaults only to newly acquired graphs,
-then prepares the PCMs. A plan with a compressed frontend or with both
-directions of one PCM returns `-EOPNOTSUPP`. Its optional configuration callback sees all open
+then prepares the PCMs. A plan with a compressed frontend returns
+`-EOPNOTSUPP`. A duplex PCM needs a playback and a capture configuration with
+its ID and opens a stream for each, and calls that name only that PCM return
+`-EOPNOTSUPP`. The optional configuration callback sees all open
 PCMs in SETUP after default tuning and before any PREPARE. Callbacks must
 not reenter the runtime. This API expects externally configured
 backend formats. Use managed acquisition below to reserve and program explicit
@@ -99,8 +101,9 @@ for retry or close. `Runtime::open()` remains the acquire-and-prepare
 convenience API, with cleanup on preparation failure.
 
 `Runtime::start()` requires prepared PCMs and starts their data paths.
-Playback clients must supply data before starting; hostless PCMs have no
-host-data requirement. A partial multi-PCM start failure keeps the started
+Playback clients must supply data before starting. Hostless PCMs need no
+data, since the runtime raises their stop threshold to the ALSA boundary
+before starting them. A partial multi-PCM start failure keeps the started
 PCMs running. Retrying starts only the remaining prepared PCMs, without
 assuming rollback. `Runtime::stop()` drops the PCMs but retains graph and
 route ownership. Prepare again before restarting, without reapplying
