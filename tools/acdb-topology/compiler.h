@@ -41,6 +41,7 @@ void dapm_switch(Topology &topology, const std::string &name,
 void bind_frontends(Compilation &compiled, const Json::Value &input);
 Json::Value query_graph(const std::vector<std::string> &paths,
                        const Keys &keys);
+std::vector<Json::Value> query_corpus(const std::vector<std::string> &paths);
 Compilation compile_graph(const Source &graph, uint32_t graph_id,
                            const Json::Value &endpoints);
 Compilation compile_corpus(const std::vector<Source> &sources,

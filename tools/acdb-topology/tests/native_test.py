@@ -64,7 +64,28 @@ def main():
             if bindings is not None:
                 check_native_reference(source, bindings[index])
 
+        command = [str(args.compiler.resolve()), "--report", str(report),
+                   "--corpus"]
+        for database in args.acdb:
+            command.extend(["--acdb", database])
+
+        completed = subprocess.run(command, capture_output=True, text=True)
+        assert completed.returncode in (0, 2), completed.stderr
+        expected = {json.dumps(e["graph_keys"]): e for e in
+                    (json.loads(p.read_text()) for p in paths)}
+        corpus = [graph["source"] for graph in
+                  json.loads(report.read_text())["graphs"]]
+        assert len(corpus) == len(expected)
+
+        for source in corpus:
+            reference = expected.pop(json.dumps(source["graph_keys"]))
+            original = dict(source)
+            if "endpoint_queries" not in reference:
+                original.pop("endpoint_queries")
+            assert original == reference, source["graph_keys"]
+
     print(f"Native ACDB queries match all {len(paths)} reference exports")
+    print("The ACDB corpus query enumerates exactly the reference selections")
     print("Factored declarations reconstruct every original graph buffer")
     print("Connection ownership and selection requirements match source")
     print("Host and physical endpoint candidates match source declarations")

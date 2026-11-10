@@ -218,10 +218,7 @@ Json::Value query_endpoints(AcdbGraphKeyVector &keys,
     return result;
 }
 
-}
-
-Json::Value query_graph(const std::vector<std::string> &paths,
-                       const Keys &keys)
+Json::Value query_selection(const Keys &keys)
 {
     if (keys.empty() || keys.size() > ACDB_MAX_KEY_COUNT)
         throw std::runtime_error("Invalid graph key count");
@@ -231,7 +228,6 @@ Json::Value query_graph(const std::vector<std::string> &paths,
     for (auto [key, value] : keys)
         native_keys.push_back({key, value});
 
-    Database database(paths);
     AcdbGraphKeyVector key_vector{uint32_t(keys.size()), native_keys.data()};
     AcdbGetGraphRsp graph{};
     query(ACDB_CMD_GET_GRAPH, &key_vector, sizeof(key_vector),
@@ -338,6 +334,80 @@ Json::Value query_graph(const std::vector<std::string> &paths,
     result["graph_connections"] = hex(connections);
 
     result["endpoint_queries"] = query_endpoints(key_vector, ids);
+
+    return result;
+}
+
+std::vector<Keys> supported_keys()
+{
+    AcdbUintList request{};
+    AcdbKeyVectorList response{};
+
+    query(ACDB_CMD_GET_SUPPORTED_GKVS, &request, sizeof(request),
+          &response, sizeof(response));
+
+    auto list = storage(response.list_size);
+    response.key_vector_list = reinterpret_cast<AcdbKeyVector *>(list.data());
+
+    query(ACDB_CMD_GET_SUPPORTED_GKVS, &request, sizeof(request),
+          &response, sizeof(response));
+    check_size(response.list_size, list.size());
+
+    size_t position = 0;
+    auto word = [&]() {
+        if (list.size() - position < sizeof(uint32_t))
+            throw std::runtime_error("Truncated ACDB graph key list");
+
+        uint32_t value;
+        std::memcpy(&value, list.data() + position, sizeof(value));
+        position += sizeof(value);
+
+        return value;
+    };
+
+    std::vector<Keys> result;
+
+    for (uint32_t i = 0; i < response.num_key_vectors; i++) {
+        uint32_t count = word();
+        if (count > (list.size() - position) / 8)
+            throw std::runtime_error("Invalid ACDB graph key count");
+
+        Keys keys;
+
+        for (uint32_t j = 0; j < count; j++) {
+            uint32_t key = word();
+            keys.emplace_back(key, word());
+        }
+
+        result.push_back(std::move(keys));
+    }
+
+    if (position != response.list_size)
+        throw std::runtime_error("Trailing ACDB graph key list data");
+
+    return result;
+}
+
+}
+
+Json::Value query_graph(const std::vector<std::string> &paths,
+                       const Keys &keys)
+{
+    Database database(paths);
+
+    return query_selection(keys);
+}
+
+std::vector<Json::Value> query_corpus(const std::vector<std::string> &paths)
+{
+    Database database(paths);
+    std::vector<Json::Value> result;
+
+    for (const auto &keys : supported_keys())
+        result.push_back(query_selection(keys));
+
+    if (result.empty())
+        throw std::runtime_error("ACDB defines no graph key vectors");
 
     return result;
 }

@@ -51,7 +51,7 @@ int main(int argc, char **argv)
             std::string option = argv[i];
             if (option == "--help") {
                 std::cout << "Usage: ar-acdb-topology --report FILE\n"
-                          << "  (--acdb FILE ... --key ID=VALUE ... |\n"
+                          << "  (--acdb FILE ... [--key ID=VALUE ...] |\n"
                           << "   --input EXPORT.json | --exports DIRECTORY)\n"
                           << "  [--graph-id ID] [--output TOPOLOGY.conf]\n"
                           << "  [--corpus]\n"
@@ -133,7 +133,8 @@ int main(int argc, char **argv)
 
         if (report.empty() || int(!databases.empty()) + int(!exports.empty()) +
             int(!input.empty()) != 1 ||
-            (databases.empty() != keys.empty()) ||
+            (databases.empty() != keys.empty() &&
+             !(corpus && keys.empty())) ||
             (!exports.empty() && !output.empty() && !corpus))
             throw std::runtime_error("Invalid options; use --help");
 
@@ -174,7 +175,9 @@ int main(int argc, char **argv)
 
         std::vector<Json::Value> graphs;
 
-        if (!databases.empty())
+        if (!databases.empty() && keys.empty())
+            graphs = acdb_topology::query_corpus(databases);
+        else if (!databases.empty())
             graphs.push_back(acdb_topology::query_graph(databases, keys));
         else if (!input.empty())
             graphs.push_back(read_json(input));
