@@ -69,8 +69,13 @@ Call `Runtime::open()` with graph-key vectors and explicit Tinyalsa PCM
 configurations for every selected frontend. Start with a zero session ID
 and an empty stream vector. The runtime reserves frontend roots, shares
 controls, opens all PCMs, applies defaults only to newly acquired graphs,
-then prepares the PCMs. A plan with a compressed frontend returns
-`-EOPNOTSUPP`. A duplex PCM needs a playback and a capture configuration with
+then prepares the PCMs. A compressed frontend must be the plan's only
+frontend, play back, and carry its `snd_compr_params` in `Pcm::compress`.
+The runtime opens its compress device, applies the defaults while the DSP
+graph is open, and sets the parameters when preparing, which starts the
+graph. Starting does nothing further. The client writes, triggers and sets
+gapless metadata on the descriptor `Runtime::compress_fd()` lends, and must
+not use it after closing the session. A duplex PCM needs a playback and a capture configuration with
 its ID and opens a stream for each, and calls that name only that PCM return
 `-EOPNOTSUPP`. The optional configuration callback sees all open
 PCMs in SETUP after default tuning and before any PREPARE. Callbacks must
