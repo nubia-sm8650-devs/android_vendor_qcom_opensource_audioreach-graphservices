@@ -513,6 +513,65 @@ class CompilerTest(unittest.TestCase):
         self.assertFalse(subgraph["can_emit"])
         self.assertEqual(self.output.read_text(), "retain")
 
+    def test_unavailable_selections_drop_their_references(self):
+        sources = corpus_fixtures()
+
+        for index, source in enumerate(sources):
+            source["graph_keys"] = [["0xa1000000", hex(0xa1000001 + index)]]
+
+        rm = self.root / "resources.xml"
+        rm.write_text('''<resource_manager_info><device_profile>
+            <out-device><id>OUT</id>
+                <back_end_name>MI2S-LPAIF-RX-PRIMARY</back_end_name>
+            </out-device></device_profile></resource_manager_info>''')
+        kv = self.root / "usecases.xml"
+        kv.write_text('''<graph_key_value_pair_info><devices>
+            <device id="OUT"><keys_and_values>
+                <graph_kv key="0xA2000000" value="0xA2000001"/>
+            </keys_and_values></device></devices><devicepps/>
+            </graph_key_value_pair_info>''')
+        links = self.root / "links.json"
+        links.write_text(json.dumps([{"path": "/sound/speaker",
+                                      "name": "Speaker Playback",
+                                      "provider": "/dais", "dai": 16}]))
+        unavailable = self.root / "unavailable.json"
+        board = ["--resource-manager", str(rm), "--usecase-kv", str(kv),
+                 "--board-links", str(links), "--unavailable",
+                 str(unavailable)]
+
+        def run(devices, selections):
+            unavailable.write_text(json.dumps({
+                "version": 1, "devices": devices, "selections": selections}))
+            return self.run_exports(sources, "--corpus", "--graph-id", "16",
+                                    *board, "--output", str(self.output))
+
+        listed = [{"graph_keys": sources[i]["graph_keys"],
+                   "reason": f"unavailable {i}"} for i in (0, 2)]
+        completed = run([{"device": "OUT", "reason": "no speaker"}], listed)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(self.report.read_text())
+        self.assertEqual([(e["selection"], e["reason"])
+                          for e in report["excluded"]],
+                         [(0, "unavailable 0"), (2, "unavailable 2")])
+        corpus = report["corpus"]
+        self.assertEqual([s["graphs"] for s in corpus["selections"]], [[16]])
+        self.assertTrue(corpus["excluded_references"])
+        self.assertEqual(set(self.read_topology()), {"m16385"})
+
+        for devices, selections in (
+                ([{"device": "IN", "reason": "unknown"}], []),
+                ([], [{"graph_keys": [["0xa1000000", "0xa1000009"]],
+                       "reason": "no source"}]),
+                ([], listed + listed[:1]),
+                ([{"device": "OUT", "reason": ""}], []),
+                ([], [{"graph_keys": source["graph_keys"], "reason": "all"}
+                      for source in sources])):
+            with self.subTest(devices=devices, selections=selections):
+                self.output.write_text("retain")
+                completed = run(devices, selections)
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                self.assertEqual(self.output.read_text(), "retain")
+
     def test_parameter_controls_keep_canonical_graph_scope(self):
         sources = corpus_fixtures()
         completed = self.run_exports(sources, "--corpus", "--graph-id", "256",
@@ -1353,6 +1412,29 @@ class CompilerTest(unittest.TestCase):
         endpoint = endpoint["selections"][0]["endpoints"]["physical"][0]
         self.assertEqual(endpoint["binding"]["status"],
                          "unresolved-board-candidate")
+
+        unavailable = self.root / "unavailable.json"
+        absent = [{"device": "FEEDBACK", "reason": "no feedback"},
+                  {"device": "ABSENT", "reason": "no profile"}]
+        unavailable.write_text(json.dumps({"version": 1, "devices": absent,
+                                           "selections": []}))
+        completed = self.run_compiler(source, *options, "--stream-type",
+                                      "VOICE", "--device-pp-type", "MIC",
+                                      "--unavailable", str(unavailable))
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report["excluded"], [])
+        endpoint = report["factored"]["selections"][0]["endpoints"]
+        self.assertEqual(endpoint["physical"][0]["binding"]["dai"], 120)
+
+        unavailable.write_text(json.dumps({
+            "version": 1, "selections": [],
+            "devices": absent + [{"device": "IN", "reason": "no mic"}]}))
+        completed = self.run_compiler(source, *options, "--stream-type",
+                                      "VOICE", "--device-pp-type", "MIC",
+                                      "--unavailable", str(unavailable))
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertIn("Every selection is unavailable", completed.stderr)
 
         completed = self.run_compiler(source, *options, "--device", "IN")
         self.assertEqual(completed.returncode, 0, completed.stderr)

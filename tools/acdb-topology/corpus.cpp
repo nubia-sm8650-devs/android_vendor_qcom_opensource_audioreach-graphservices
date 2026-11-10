@@ -136,11 +136,13 @@ void emit_reference(Topology &topology, const std::string &name,
 
 Compilation compile_corpus(const std::vector<Source> &sources,
                             const Json::Value &factored, uint32_t first_id,
-                            const Json::Value &hardware_widgets)
+                            const Json::Value &hardware_widgets,
+                            const std::set<uint32_t> &excluded_modules)
 {
     Compilation result;
     auto &report = result.report;
     report["issues"] = Json::Value(Json::arrayValue);
+    report["excluded_references"] = Json::Value(Json::arrayValue);
     report["subgraphs"] = Json::Value(Json::arrayValue);
     report["references"] = Json::Value(Json::arrayValue);
     report["selections"] = Json::Value(Json::arrayValue);
@@ -216,8 +218,20 @@ Compilation compile_corpus(const std::vector<Source> &sources,
             std::map<Bytes, uint32_t> occurrences;
 
             for (const auto &link : is_control ? control : data) {
-                if (!owners.count(link.peers[0]) ||
-                    !owners.count(link.peers[2])) {
+                bool known[] = {owners.count(link.peers[0]) != 0,
+                                owners.count(link.peers[2]) != 0};
+
+                if (known[0] != known[1] &&
+                    excluded_modules.count(link.peers[known[0] ? 2 : 0])) {
+                    Json::Value value;
+                    value["source"] = link.peers[0];
+                    value["destination"] = link.peers[2];
+                    value["control"] = is_control;
+                    report["excluded_references"].append(value);
+                    continue;
+                }
+
+                if (!known[0] || !known[1]) {
                     issue(report, "compiler-corpus-unresolved-reference",
                           link.peers[0], link.peers[2]);
                     continue;

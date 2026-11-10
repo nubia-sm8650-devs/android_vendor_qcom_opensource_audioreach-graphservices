@@ -42,6 +42,7 @@ int main(int argc, char **argv)
         std::set<uint32_t> key_ids;
         std::string exports, input, output, report;
         std::string resources, usecases, dtb, board_links, selection_contexts;
+        std::string unavailable;
         std::string hardware_widgets, pcm_bindings, bindings_output;
         Json::Value context(Json::objectValue), devices(Json::arrayValue);
         uint32_t graph_id = 0;
@@ -60,7 +61,7 @@ int main(int argc, char **argv)
                           << "  [--device PAL_DEVICE ... --stream-type TYPE\n"
                           << "   --device-pp-type TYPE\n"
                           << "   --context NAME=VALUE ...]\n"
-                          << "  [--selection-contexts FILE]\n"
+                          << "  [--selection-contexts FILE] [--unavailable FILE]\n"
                           << "  [--hardware-widgets FILE]\n"
                           << "  [--pcm-bindings FILE] [--bindings-output FILE]\n";
                 return 0;
@@ -106,6 +107,8 @@ int main(int argc, char **argv)
                 dtb = value;
             else if (option == "--board-links")
                 board_links = value;
+            else if (option == "--unavailable")
+                unavailable = value;
             else if (option == "--device")
                 devices.append(value);
             else if (option == "--selection-contexts")
@@ -159,7 +162,8 @@ int main(int argc, char **argv)
             throw std::runtime_error("Bindings output requires PCM bindings");
 
         if (!board_inputs && (!context.empty() || !devices.empty() ||
-                             !selection_contexts.empty()))
+                             !selection_contexts.empty() ||
+                             !unavailable.empty()))
             throw std::runtime_error("Device context requires board inputs");
 
         if (!selection_contexts.empty() &&
@@ -178,6 +182,10 @@ int main(int argc, char **argv)
 
         if (!devices.empty())
             board["devices"] = devices;
+
+        if (!unavailable.empty())
+            board["unavailable"] = acdb_topology::read_unavailable(
+                read_json(unavailable), board);
 
         std::vector<Json::Value> graphs;
 
@@ -218,15 +226,57 @@ int main(int argc, char **argv)
         size_t supported = 0;
         std::string topology;
 
-        result["factored"] = acdb_topology::factor_sources(sources);
-        acdb_topology::resolve_connections(result["factored"]);
+        Json::Value contexts;
+        std::set<uint32_t> excluded_modules;
+
         if (!selection_contexts.empty()) {
-            acdb_topology::qualify_selections(result["factored"],
-                                              read_json(selection_contexts));
+            contexts = read_json(selection_contexts);
             result["selection_contexts"] = selection_contexts;
         }
 
-        acdb_topology::describe_endpoints(result["factored"], board);
+        auto analyze = [&]() {
+            result["factored"] = acdb_topology::factor_sources(sources);
+            acdb_topology::resolve_connections(result["factored"]);
+
+            if (!contexts.isNull())
+                acdb_topology::qualify_selections(result["factored"], contexts);
+
+            acdb_topology::describe_endpoints(result["factored"], board);
+        };
+
+        analyze();
+
+        if (!unavailable.empty()) {
+            result["unavailable"] = unavailable;
+            result["excluded"] = acdb_topology::excluded_selections(
+                result["factored"], board["unavailable"]);
+
+            const auto &excluded = result["excluded"];
+
+            for (Json::ArrayIndex i = excluded.size(); i > 0; i--) {
+                auto index = excluded[i - 1]["selection"].asUInt();
+                sources.erase(sources.begin() + index);
+                graphs.erase(graphs.begin() + index);
+            }
+
+            if (sources.empty())
+                throw std::runtime_error("Every selection is unavailable");
+
+            if (!contexts.isNull())
+                contexts = acdb_topology::remaining_contexts(contexts, excluded);
+
+            if (!result["excluded"].empty()) {
+                Json::Value before = result["factored"]["module_ownership"];
+
+                analyze();
+
+                const auto &after = result["factored"]["module_ownership"];
+                for (const auto &name : before.getMemberNames()) {
+                    if (!after.isMember(name))
+                        excluded_modules.insert(read_number(name));
+                }
+            }
+        }
 
         for (size_t i = 0; i < sources.size(); i++) {
             const auto &endpoints = result["factored"]["selections"]
@@ -262,7 +312,8 @@ int main(int argc, char **argv)
             }
 
             auto compiled = acdb_topology::compile_corpus(
-                sources, result["factored"], graph_id, widgets);
+                sources, result["factored"], graph_id, widgets,
+                excluded_modules);
             if (!pcm_bindings.empty()) {
                 acdb_topology::bind_frontends(compiled,
                                               read_json(pcm_bindings));

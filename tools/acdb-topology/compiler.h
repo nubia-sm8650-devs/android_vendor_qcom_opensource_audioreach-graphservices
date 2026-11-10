@@ -46,7 +46,8 @@ Compilation compile_graph(const Source &graph, uint32_t graph_id,
                            const Json::Value &endpoints);
 Compilation compile_corpus(const std::vector<Source> &sources,
                             const Json::Value &factored, uint32_t first_id,
-                            const Json::Value &hardware_widgets = {});
+                            const Json::Value &hardware_widgets = {},
+                            const std::set<uint32_t> &excluded_modules = {});
 Json::Value read_hardware_widgets(const Json::Value &input,
                                  const Json::Value &board);
 void bind_hardware_widgets(Compilation &compiled, uint32_t graph_id,
@@ -56,6 +57,11 @@ std::string module_widget_type(uint32_t module);
 Json::Value factor_sources(const std::vector<Source> &sources);
 void resolve_connections(Json::Value &factored);
 void qualify_selections(Json::Value &factored, const Json::Value &contexts);
+Json::Value read_unavailable(const Json::Value &input, const Json::Value &board);
+Json::Value excluded_selections(const Json::Value &factored,
+                                const Json::Value &unavailable);
+Json::Value remaining_contexts(const Json::Value &contexts,
+                               const Json::Value &excluded);
 void describe_endpoints(Json::Value &factored, const Json::Value &board);
 void bind_hardware(Json::Value &endpoints, const Json::Value &board);
 Json::Value read_board(const std::string &resources,

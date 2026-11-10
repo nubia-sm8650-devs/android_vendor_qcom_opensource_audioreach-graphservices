@@ -39,6 +39,7 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
 
     std::set<std::array<uint32_t, 3>> ports;
     std::set<std::string> open_conditions;
+    std::set<std::string> unavailable;
     Json::Value sources(Json::arrayValue);
     bool unresolved = false;
 
@@ -74,6 +75,11 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         if (!matches)
             continue;
 
+        if (board["unavailable"]["devices"].isMember(device.asString())) {
+            unavailable.insert(device.asString());
+            continue;
+        }
+
         if (candidate["status"] != "candidate" ||
             profile["conditional_backend"].asBool()) {
             unresolved = true;
@@ -101,6 +107,14 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
 
     result["status"] = unresolved ? "unresolved-board-candidate" :
         ports.empty() ? "missing-board-binding" : "ambiguous-board-binding";
+
+    if (!unresolved && ports.empty() && !unavailable.empty()) {
+        result["status"] = "unavailable-device";
+        result["unavailable_devices"] = Json::Value(Json::arrayValue);
+
+        for (const auto &device : unavailable)
+            result["unavailable_devices"].append(device);
+    }
 
     if (unresolved || ports.size() != 1)
         return result;
