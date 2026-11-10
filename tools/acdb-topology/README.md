@@ -21,6 +21,11 @@ ar-acdb-topology --input graph.json --report report.json \
     --device PAL_DEVICE_OUT_SPEAKER --stream-type PAL_STREAM_DEEP_BUFFER
 ```
 
+Builds that cannot depend on the kernel's DTB can pass `--board-links FILE`
+instead of `--board-dtb`. The file holds the `board.links` array of a report
+generated with the DTB. Each link's transport is recomputed from its DAI and
+must match a stored one.
+
 Use repeated `--device` options to restrict the PAL device profiles.
 Supply `--device-pp-type` for DevicePPType-qualified assignments and
 `--context NAME=VALUE` for other XML conditions, such as CustomConfig.
