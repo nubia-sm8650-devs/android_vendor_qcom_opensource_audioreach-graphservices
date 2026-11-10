@@ -701,6 +701,15 @@ class CompilerTest(unittest.TestCase):
                     self.assertIn(path, dapm_routes(binary))
 
                 self.assertEqual(corpus["frontends"][0]["module"], root_module)
+                inferred = json.loads(json.dumps(definitions))
+                del inferred[1]["module"]
+                bindings.write_text(json.dumps({"version": 1,
+                                                "pcms": inferred}))
+                completed = self.run_exports(sources, *options)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                inferred = json.loads(self.report.read_text())
+                self.assertEqual(inferred["corpus"]["frontends"],
+                                 corpus["frontends"])
                 bindings.write_text(json.dumps({"version": 1,
                                                 "pcms": definitions[:1]}))
                 completed = self.run_exports(sources, *options)
@@ -759,6 +768,23 @@ class CompilerTest(unittest.TestCase):
                 graph = graph.replace(words(old), words(new))
             source["graph_open"] = graph.hex()
             return source
+
+        for direction, module in (("playback", 0x4001), ("capture", 0x4002)):
+            with self.subTest(direction=direction):
+                completed = run(generic_fixture(), direction, "hostless")
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                frontend, = json.loads(
+                    self.report.read_text())["corpus"]["frontends"]
+                self.assertEqual(frontend["module"], module)
+
+        completed = run(fanout_fixture(), "playback", "hostless")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        completed = run(fanout_fixture(), "capture", "hostless")
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertIn("explicit module", completed.stderr)
+        completed = run(fanout_fixture(), "capture", "hostless",
+                        module=0x4003)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
         completed = run(retyped(0x07001000, 0x07001009), "playback",
                         "compress")

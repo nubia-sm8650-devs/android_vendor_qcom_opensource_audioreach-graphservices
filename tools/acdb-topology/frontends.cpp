@@ -21,6 +21,33 @@ struct Root {
     bool hardware;
 };
 
+uint32_t hostless_module(const Root &root, bool playback,
+                         const std::set<std::pair<uint32_t, uint32_t>> &edges)
+{
+    if (root.modules.size() == 1)
+        return root.modules.begin()->first;
+
+    std::set<uint32_t> candidates;
+
+    for (const auto &[instance, type] : root.modules) {
+        (void)type;
+        bool input = false, output = false;
+
+        for (const auto &[source, sink] : edges) {
+            input |= sink == instance;
+            output |= source == instance;
+        }
+
+        if (playback ? output && !input : input && !output)
+            candidates.insert(instance);
+    }
+
+    if (candidates.size() != 1)
+        throw std::runtime_error("Hostless PCM root needs an explicit module");
+
+    return *candidates.begin();
+}
+
 void capabilities(std::ostream &out, const std::string &name,
                    const Json::Value &input)
 {
@@ -182,11 +209,14 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
         }
 
         if (mode == "hostless") {
-            if (hosts || !binding["module"].isUInt() ||
-                !root.modules.count(binding["module"].asUInt()))
+            if (hosts || (binding.isMember("module") &&
+                          (!binding["module"].isUInt() ||
+                           !root.modules.count(binding["module"].asUInt()))))
                 throw std::runtime_error("Invalid hostless PCM root");
 
-            module = binding["module"].asUInt();
+            module = binding.isMember("module") ?
+                binding["module"].asUInt() :
+                hostless_module(root, playback, edges);
         } else if (hosts != 1 || !module || binding.isMember("module")) {
             throw std::runtime_error("PCM root lacks a unique host endpoint");
         } else if (mode == "pcm" && (decoder || encoder)) {
