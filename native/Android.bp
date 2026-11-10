@@ -4,6 +4,11 @@ filegroup {
 }
 
 filegroup {
+    name: "ar-topology-binding-sources",
+    srcs: ["bindings.cpp"],
+}
+
+filegroup {
     name: "ar-topology-startup-sources",
     srcs: ["startup.cpp"],
 }
@@ -11,7 +16,7 @@ filegroup {
 filegroup {
     name: "ar-topology-runtime-sources",
     srcs: [
-        "bindings.cpp",
+        ":ar-topology-binding-sources",
         "defaults.cpp",
         "media.cpp",
         "parameters.cpp",
