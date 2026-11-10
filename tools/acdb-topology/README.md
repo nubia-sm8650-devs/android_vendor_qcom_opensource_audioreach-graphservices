@@ -201,11 +201,20 @@ For example, a PCM root declaration has this shape.
 ```
 
 These are advertised frontend capabilities, not hardware defaults. A PCM
-root must contain one shared-memory endpoint in its declared direction.
-For an explicit hostless application, use `"mode": "hostless"` and a
-numeric `module` identifying its root module. Device graphs cannot own
-frontends. Compressed and bidirectional non-tunnel bindings are not
-silently converted to PCM.
+root must contain one shared-memory endpoint in its declared direction and
+no placeholder encoder or decoder.
+
+Use `"mode": "compress"` for compress offload playback. Its root needs a
+packet write endpoint and the placeholder decoder, and the frontend becomes
+a compressed SectionPCM. Compressed capture is not supported.
+
+For an explicit hostless application, use `"mode": "hostless"`. The
+frontend connects to the root's only module, or else to its one module
+without intrinsic input for playback or without intrinsic output for
+capture. Cross-subgraph links do not count, so a loopback stream's entry
+module qualifies. Name the module with a numeric `module` when no single
+module qualifies. Device graphs cannot own frontends. Bidirectional
+non-tunnel bindings are not silently converted to PCM.
 
 Intrinsic data paths retain their native connectivity. Cross-graph data
 paths get separate DAPM switches, while DSP connections keep their
