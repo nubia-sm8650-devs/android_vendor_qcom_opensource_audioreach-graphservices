@@ -53,6 +53,7 @@ Compact files must include reference ownership metadata and module instance
 IDs in every `tuning` entry's `modules` array. Regenerate older files that
 lack this metadata; ownership is not inferred from control names.
 
+Each frontend keeps its binding mode, `pcm`, `hostless` or `compress`.
 `Bindings::select()` composes complete graph-key vectors before checking
 directional reachability. Device fragments need not own a frontend alone.
 References do not add missing peers; their DAPM paths become eligible only
@@ -63,7 +64,8 @@ Call `Runtime::open()` with graph-key vectors and explicit Tinyalsa PCM
 configurations for every selected frontend. Start with a zero session ID
 and an empty stream vector. The runtime reserves frontend roots, shares
 controls, opens all PCMs, applies defaults only to newly acquired graphs,
-then prepares the PCMs. Its optional configuration callback sees all open
+then prepares the PCMs. A plan with a compressed frontend returns
+`-EOPNOTSUPP`. Its optional configuration callback sees all open
 PCMs in SETUP after default tuning and before any PREPARE. Callbacks must
 not reenter the runtime. This API expects externally configured
 backend formats. Use managed acquisition below to reserve and program explicit
