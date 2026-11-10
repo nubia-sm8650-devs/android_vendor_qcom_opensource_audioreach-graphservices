@@ -159,8 +159,10 @@ Each record names a complete opened GKV selection and supplies its rate,
 channel count, native data-format identity and ALSA sample-format name.
 An optional `HardwareConfig::backend` anchors the request to an exact native
 provider and DAI identity instead of accepting any port in that selection.
-The selection must identify one physical port, and every selected hardware
-gate must have a qualified backend binding and a supplied configuration.
+A record without one needs a selection with one physical port. A selection
+with several ports, such as a loopback's playback and capture devices, takes
+one record naming each backend. Every selected hardware gate must have a
+qualified backend binding and a supplied configuration.
 No frontend format, device alias or topology data-format default is inferred.
 
 The runtime preflights all enum values before writing, shares compatible
