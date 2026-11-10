@@ -30,6 +30,19 @@ SET or PREPARE. They require registration and acknowledged memory lifetime,
 not conversion to ordinary SETs. The library does not replace PAL/AGM
 ownership policy, implement live switching or provide restart replay.
 
+## Device startup
+
+Native AGM and PAL startup share the names in `ar_topology_startup.h`. The
+`ro.vendor.audio.native_topology.card` property names the ALSA card by its
+mixer name, and `ro.vendor.audio.native_topology.alias` gives PAL the stock
+card name it uses for its platform check and configuration file names. The
+compiler's binding file is installed at
+`/vendor/etc/audio/audioreach-native-bindings.json`.
+
+`ar_topology::find_card()` returns the index of the only card with the given
+mixer name. `ar_topology::load_bindings()` parses and validates the binding
+file.
+
 ## Shared session ownership
 
 Construct `ar_topology::Bindings` from the compiler's compact JSON output,
