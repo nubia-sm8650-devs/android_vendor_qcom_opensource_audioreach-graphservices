@@ -204,9 +204,10 @@ These are advertised frontend capabilities, not hardware defaults. A PCM
 root must contain one shared-memory endpoint in its declared direction and
 no placeholder encoder or decoder.
 
-Use `"mode": "compress"` for compress offload playback. Its root needs a
-packet write endpoint and the placeholder decoder, and the frontend becomes
-a compressed SectionPCM. Compressed capture is not supported.
+Use `"mode": "compress"` for compressed playback and capture. A playback
+root needs a packet write endpoint and the placeholder decoder, a capture root
+a packet read endpoint and the placeholder encoder, and the frontend becomes a
+compressed SectionPCM.
 
 For an explicit hostless application, use `"mode": "hostless"`. The
 frontend connects to the root's only module, or else to its one module
