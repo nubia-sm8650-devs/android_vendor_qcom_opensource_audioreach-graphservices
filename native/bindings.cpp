@@ -422,6 +422,56 @@ int Bindings::select(const std::vector<Keys> &requests, Plan &plan) const
     }
 }
 
+int Bindings::frontends(const Keys &partial,
+                        std::vector<Frontend> &frontends) const
+{
+    try {
+        auto wanted = normalize(partial);
+        auto same = [](const Frontend &a, const Frontend &b) {
+            return a.pcm_id == b.pcm_id && a.graph_id == b.graph_id &&
+                   a.capture == b.capture && a.mode == b.mode;
+        };
+        std::vector<Frontend> common;
+        bool found = false;
+
+        for (const auto &[keys, selection] : impl->selections) {
+            (void)selection;
+
+            if (!std::includes(keys.begin(), keys.end(), wanted.begin(),
+                               wanted.end()))
+                continue;
+
+            Plan plan;
+
+            int status = select({keys}, plan);
+            if (status == -EOPNOTSUPP)
+                continue;
+
+            if (status)
+                return status;
+
+            if (found && !std::equal(common.begin(), common.end(),
+                                     plan.frontends.begin(),
+                                     plan.frontends.end(), same))
+                return -EOPNOTSUPP;
+
+            common = std::move(plan.frontends);
+            found = true;
+        }
+
+        if (!found)
+            return -ENOENT;
+
+        frontends = std::move(common);
+
+        return 0;
+    } catch (const std::invalid_argument &) {
+        return -EINVAL;
+    } catch (const std::bad_alloc &) {
+        return -ENOMEM;
+    }
+}
+
 const std::map<std::string, Reference> &Bindings::references() const
 {
     return impl->references;

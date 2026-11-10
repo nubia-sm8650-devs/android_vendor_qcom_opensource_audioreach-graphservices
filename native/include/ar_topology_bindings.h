@@ -56,6 +56,7 @@ public:
     explicit Bindings(const Json::Value &input);
     ~Bindings();
     int select(const std::vector<Keys> &requests, Plan &plan) const;
+    int frontends(const Keys &partial, std::vector<Frontend> &frontends) const;
     const std::map<std::string, Reference> &references() const;
     const std::map<uint32_t, Backend> &aifs() const;
 

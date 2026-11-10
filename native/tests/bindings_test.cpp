@@ -122,12 +122,82 @@ static void emitted(const char *path)
     }
 }
 
+static Json::Value device_selection(unsigned device,
+                                    std::vector<unsigned> graphs,
+                                    std::vector<std::string> references)
+{
+    Json::Value selection;
+
+    for (auto [key, value] : {std::pair{10u, 1u}, {20u, device}}) {
+        Json::Value pair(Json::arrayValue);
+        pair.append(std::to_string(key));
+        pair.append(std::to_string(value));
+        selection["graph_keys"].append(pair);
+    }
+
+    for (unsigned graph : graphs) {
+        selection["graphs"].append(graph);
+        Json::Value tuning;
+        tuning["graph_id"] = graph;
+        tuning["subgraph"] = 0xb0000000u + graph;
+        tuning["set_control"] = "set" + std::to_string(graph);
+        tuning["modules"].append(0x4000 + graph);
+        selection["tuning"].append(tuning);
+    }
+
+    selection["references"] = Json::Value(Json::arrayValue);
+
+    for (const auto &name : references)
+        selection["references"].append(name);
+
+    return selection;
+}
+
+static void partial_frontends()
+{
+    auto input = fixture();
+    input["selections"] = Json::Value(Json::arrayValue);
+    input["selections"].append(device_selection(1, {1, 2}, {"link"}));
+    Json::Value reference = input["references"][0];
+    reference["name"] = "link3";
+    reference["destination_graph"] = 3;
+    reference["path_control"] = "path3";
+    input["references"].append(reference);
+    input["selections"].append(device_selection(2, {1, 3}, {"link3"}));
+    input["selections"].append(device_selection(4, {2}, {}));
+
+    std::vector<ar_topology::Frontend> frontends;
+    ar_topology::Bindings bindings(input);
+    assert(!bindings.frontends({{10, 1}}, frontends));
+    assert(frontends.size() == 1 && frontends[0].pcm_id == 0 &&
+           frontends[0].graph_id == 1 && !frontends[0].capture);
+    frontends.clear();
+    assert(!bindings.frontends({{20, 2}, {10, 1}}, frontends));
+    assert(frontends.size() == 1);
+    assert(bindings.frontends({{10, 9}}, frontends) == -ENOENT);
+    assert(bindings.frontends({{10, 1}, {10, 2}}, frontends) == -EINVAL);
+
+    Json::Value frontend = input["frontends"][0];
+    frontend["pcm_id"] = 5;
+    frontend["graph_id"] = 4;
+    input["frontends"].append(frontend);
+    input["selections"].append(device_selection(3, {4}, {}));
+    ar_topology::Bindings ambiguous(input);
+    frontends.clear();
+    assert(ambiguous.frontends({{10, 1}}, frontends) == -EOPNOTSUPP);
+    assert(frontends.empty());
+    assert(!ambiguous.frontends({{10, 1}, {20, 3}}, frontends));
+    assert(frontends.size() == 1 && frontends[0].pcm_id == 5);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2) {
         emitted(argv[1]);
         return 0;
     }
+
+    partial_frontends();
 
     auto input = fixture();
     ar_topology::Bindings bindings(input);
