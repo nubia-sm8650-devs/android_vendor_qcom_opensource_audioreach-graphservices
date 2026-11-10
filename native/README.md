@@ -61,6 +61,9 @@ directional reachability. Device fragments need not own a frontend alone.
 References do not add missing peers; their DAPM paths become eligible only
 when both peers belong to the composition. Failed selection leaves the
 output plan unchanged.
+`Bindings::frontends()` returns the frontends shared by every selection that
+contains a partial key set, for callers that know their device keys only
+later.
 
 Call `Runtime::open()` with graph-key vectors and explicit Tinyalsa PCM
 configurations for every selected frontend. Start with a zero session ID
