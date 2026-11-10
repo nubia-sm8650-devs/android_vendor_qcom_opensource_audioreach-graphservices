@@ -861,4 +861,18 @@ int main()
     assert(offload_runtime.open({{{10, 2}}}, {configuration(2)}, offload, d,
                                 initialize, &offload_init) == -EOPNOTSUPP);
     assert(d.empty() && open_pcms.empty());
+
+    auto duplex = fixture();
+    duplex["frontends"][1]["mode"] = "hostless";
+    duplex["frontends"].append(duplex["frontends"][1]);
+    duplex["frontends"][3]["direction"] = "capture";
+    ar_topology::Bindings loopback_bindings(duplex);
+    ar_topology::Runtime loopback_runtime(0, &controls, loopback_bindings);
+    ar_topology::SessionId loopback = 0;
+    auto capture_config = configuration(2);
+    capture_config.flags = PCM_IN;
+    assert(loopback_runtime.open({{{10, 2}}}, {configuration(2), capture_config},
+                                 loopback, d, initialize, &offload_init) ==
+           -EOPNOTSUPP);
+    assert(d.empty() && open_pcms.empty());
 }

@@ -378,13 +378,16 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         if (pcms.size() != session.plan.frontends.size())
             return -EINVAL;
 
-        std::set<uint32_t> requested;
+        std::set<uint32_t> requested, planned;
+
+        for (const auto &frontend : session.plan.frontends) {
+            if (frontend.mode == FrontendMode::compress ||
+                !planned.insert(frontend.pcm_id).second)
+                return -EOPNOTSUPP;
+        }
 
         for (const auto &frontend : session.plan.frontends) {
             const Pcm *config = nullptr;
-
-            if (frontend.mode == FrontendMode::compress)
-                return -EOPNOTSUPP;
 
             if (occupied.count(frontend.pcm_id))
                 return -EBUSY;

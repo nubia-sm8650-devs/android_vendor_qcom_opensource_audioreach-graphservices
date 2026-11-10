@@ -80,7 +80,7 @@ struct Bindings::Impl {
     std::map<uint32_t, Graph> graphs;
     std::map<uint32_t, std::set<uint32_t>> modules;
     std::map<Keys, Selection> selections;
-    std::map<uint32_t, Frontend> frontends;
+    std::map<std::pair<uint32_t, bool>, Frontend> frontends;
     std::map<std::string, Reference> references;
     std::map<std::string, uint32_t> hardware;
     std::map<std::string, Backend> backends;
@@ -164,6 +164,7 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
     }
 
     std::set<uint32_t> roots;
+    std::map<uint32_t, uint32_t> pcm_roots;
     std::set<std::string> switches;
 
     for (const auto &frontend : input["frontends"]) {
@@ -176,12 +177,25 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
             {"hostless", FrontendMode::hostless},
             {"compress", FrontendMode::compress}};
         auto found = modes.find(mode);
-        if (!impl->graphs.count(root) || !roots.insert(root).second ||
+        if (!impl->graphs.count(root) ||
             (direction != "playback" && direction != "capture") ||
-            found == modes.end() ||
-            !impl->frontends.emplace(id, Frontend{id, root,
-                direction == "capture", found->second}).second)
+            found == modes.end())
             throw std::invalid_argument("Invalid frontend binding");
+
+        Frontend value{id, root, direction == "capture", found->second};
+        auto [prior, added] = pcm_roots.emplace(id, root);
+        auto other = impl->frontends.find({id, !value.capture});
+        bool pair = !added && prior->second == root &&
+            value.mode == FrontendMode::hostless &&
+            other != impl->frontends.end() &&
+            other->second.mode == FrontendMode::hostless;
+
+        if ((!added && !pair) || (added && roots.count(root)) ||
+            !impl->frontends.emplace(std::make_pair(id, value.capture),
+                                     value).second)
+            throw std::invalid_argument("Invalid frontend binding");
+
+        roots.insert(root);
     }
 
     for (const auto &reference : input["references"]) {
@@ -381,7 +395,8 @@ int Bindings::select(const std::vector<Keys> &requests, Plan &plan) const
             } while (previous != reached.size());
 
             owned.insert(reached.begin(), reached.end());
-            result.frontend_graphs.emplace(frontend.pcm_id, std::move(reached));
+            result.frontend_graphs[frontend.pcm_id].insert(reached.begin(),
+                                                           reached.end());
         }
 
         if (result.frontends.empty() || owned.size() != result.graphs.size())

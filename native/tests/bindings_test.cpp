@@ -179,6 +179,50 @@ int main(int argc, char **argv)
         assert(accepted == (std::string(mode) != "mmap"));
     }
 
+    auto duplex = fixture();
+    duplex["frontends"][0]["mode"] = "hostless";
+    duplex["frontends"].append(duplex["frontends"][0]);
+    duplex["frontends"][1]["direction"] = "capture";
+    Json::Value feed;
+    feed["name"] = "feed";
+    feed["control"] = false;
+    feed["source_graph"] = 3;
+    feed["destination_graph"] = 1;
+    feed["path_control"] = "feed path";
+    duplex["references"].append(feed);
+    duplex["selections"][2]["references"].append("feed");
+    ar_topology::Bindings loopback(duplex);
+    assert(!loopback.select({{{10, 1}}, {{10, 2}}, {{10, 3}}}, plan));
+    assert(plan.frontends.size() == 2 && plan.frontends[0].pcm_id == 0 &&
+           plan.frontends[1].pcm_id == 0 &&
+           plan.frontends[0].capture != plan.frontends[1].capture);
+    assert(plan.frontend_graphs.size() == 1 &&
+           plan.frontend_graphs.at(0) == std::set<uint32_t>({1, 2, 3}));
+
+    for (int change = 0; change < 4; change++) {
+        auto invalid = duplex;
+        auto &second = invalid["frontends"][1];
+
+        if (change == 0)
+            invalid["frontends"][0]["mode"] = second["mode"] = "pcm";
+        else if (change == 1)
+            second["graph_id"] = 3;
+        else if (change == 2)
+            second["pcm_id"] = 1;
+        else
+            second["direction"] = "playback";
+
+        bool rejected = false;
+
+        try {
+            ar_topology::Bindings bindings(invalid);
+        } catch (const std::invalid_argument &) {
+            rejected = true;
+        }
+
+        assert(rejected);
+    }
+
     Json::Value extra(Json::arrayValue);
     extra.append("0x1");
     extra.append("0x2");
