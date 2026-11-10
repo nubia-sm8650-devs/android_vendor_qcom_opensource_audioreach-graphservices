@@ -213,7 +213,10 @@ frontend connects to the root's only module, or else to its one module
 without intrinsic input for playback or without intrinsic output for
 capture. Cross-subgraph links do not count, so a loopback stream's entry
 module qualifies. Name the module with a numeric `module` when no single
-module qualifies. Device graphs cannot own frontends. Bidirectional
+module qualifies. A hostless binding with `"direction": "duplex"` emits one
+PCM with both streams, connecting playback to the inferred entry module and
+capture to the inferred exit module, as a loopback stream needs to start
+both of its backends. Device graphs cannot own frontends. Bidirectional
 non-tunnel bindings are not silently converted to PCM.
 
 Intrinsic data paths retain their native connectivity. Cross-graph data
