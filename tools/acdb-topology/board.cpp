@@ -196,7 +196,7 @@ bool haptics_over_wsa(xmlNode *root)
     return false;
 }
 
-xmlNode *haptics_backend(xmlNode *profile)
+xmlNode *usecase_backend(xmlNode *profile)
 {
     xmlNode *result = nullptr;
 
@@ -497,11 +497,14 @@ Json::Value read_board(const std::string &resources,
 
         if (haptics_wsa &&
             profile["device"] == "PAL_DEVICE_OUT_HAPTICS_DEVICE") {
-            if (auto *backend = haptics_backend(node)) {
+            if (auto *backend = usecase_backend(node)) {
                 profile["declared_backend"] = profile["backend"];
                 profile["backend"] = content(backend);
                 profile["backend_override"] = xml_text(backend);
             }
+        } else if (profile["device"] != "PAL_DEVICE_OUT_HAPTICS_DEVICE" &&
+                   usecase_backend(node)) {
+            profile["conditional_backend"] = true;
         }
 
         profile["transport"] = backend_transport(profile["backend"].asString());

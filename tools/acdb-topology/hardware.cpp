@@ -38,6 +38,7 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         return result;
 
     std::set<std::array<uint32_t, 3>> ports;
+    std::set<std::string> open_conditions;
     Json::Value sources(Json::arrayValue);
     bool unresolved = false;
 
@@ -57,12 +58,13 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         if (!selected)
             continue;
 
-        bool matches = true, missing = false;
+        bool matches = true;
+        std::set<std::string> missing;
         const auto &conditions = assignment["conditions"];
 
         for (const auto &name : conditions.getMemberNames()) {
             if (!board["context"].isMember(name))
-                missing = true;
+                missing.insert(name);
             else if (board["context"][name].isNull() ||
                      !contains(conditions[name].asString(),
                                board["context"][name].asString()))
@@ -72,10 +74,13 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
         if (!matches)
             continue;
 
-        if (missing || candidate["status"] != "candidate") {
+        if (candidate["status"] != "candidate" ||
+            profile["conditional_backend"].asBool()) {
             unresolved = true;
             continue;
         }
+
+        open_conditions.insert(missing.begin(), missing.end());
 
         for (const auto &index : candidate["links"]) {
             const auto &link = board["links"][index.asUInt()];
@@ -176,6 +181,13 @@ Json::Value bind(const Json::Value &endpoint, const Json::Value &board)
     result["dai"] = port[2];
     result["tokens"] = tokens;
     result["candidates"] = sources;
+
+    if (!open_conditions.empty()) {
+        result["open_conditions"] = Json::Value(Json::arrayValue);
+
+        for (const auto &name : open_conditions)
+            result["open_conditions"].append(name);
+    }
 
     return result;
 }

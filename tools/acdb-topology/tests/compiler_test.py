@@ -1346,12 +1346,27 @@ class CompilerTest(unittest.TestCase):
                          "ambiguous-native-interface")
 
         source = hardware_fixture("CODEC_DMA")
-        completed = self.run_compiler(source, *options, "--device", "IN")
+        completed = self.run_compiler(source, *options, "--stream-type",
+                                      "VOICE", "--device-pp-type", "MIC")
         self.assertEqual(completed.returncode, 2, completed.stderr)
+        endpoint = json.loads(self.report.read_text())["factored"]
+        endpoint = endpoint["selections"][0]["endpoints"]["physical"][0]
+        self.assertEqual(endpoint["binding"]["status"],
+                         "unresolved-board-candidate")
+
+        completed = self.run_compiler(source, *options, "--device", "IN")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        open_topology = self.output.read_bytes()
+        endpoint = json.loads(self.report.read_text())["factored"]
+        endpoint = endpoint["selections"][0]["endpoints"]["physical"][0]
+        self.assertEqual(endpoint["binding"]["open_conditions"],
+                         ["DevicePPType", "StreamType"])
+
         qualified = ["--device", "IN", "--stream-type", "VOICE",
                      "--device-pp-type", "MIC"]
         completed = self.run_compiler(source, *options, *qualified)
         self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(self.output.read_bytes(), open_topology)
         decoded = self.read_topology()
         self.assertEqual({k: decoded["m16385"][2][k] for k in (250, 251, 253)},
                          {250: 4, 251: 1, 253: 1})
@@ -1511,10 +1526,30 @@ class CompilerTest(unittest.TestCase):
             'DevicePPType="MIC"',
             'DevicePPType="MIC" CustomConfig="voice-mic"'))
         completed = self.run_compiler(source, *options, *qualified)
-        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        endpoint = json.loads(self.report.read_text())["factored"]
+        endpoint = endpoint["selections"][0]["endpoints"]["physical"][0]
+        self.assertEqual(endpoint["binding"]["open_conditions"],
+                         ["CustomConfig"])
         completed = self.run_compiler(source, *options, *qualified,
                                       "--context", "CustomConfig=voice-mic")
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+        original_rm = rm.read_text()
+        rm.write_text(original_rm.replace(
+            "<back_end_name>CODEC_DMA-LPAIF_RXTX-TX-3</back_end_name>",
+            "<back_end_name>CODEC_DMA-LPAIF_RXTX-TX-3</back_end_name>"
+            "<usecase><name>VOICE</name><custom-config name=\"voice-mic\">"
+            "<backend_name>CODEC_DMA-LPAIF_RXTX-TX-4</backend_name>"
+            "</custom-config></usecase>"))
+        completed = self.run_compiler(source, *options, *qualified,
+                                      "--context", "CustomConfig=voice-mic")
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        endpoint = json.loads(self.report.read_text())["factored"]
+        endpoint = endpoint["selections"][0]["endpoints"]["physical"][0]
+        self.assertEqual(endpoint["binding"]["status"],
+                         "unresolved-board-candidate")
+        rm.write_text(original_rm)
         completed = self.run_compiler(source, *options, "--device", "FEEDBACK",
                                       "--stream-type", "VOICE",
                                       "--device-pp-type", "MIC",
