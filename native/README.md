@@ -148,8 +148,9 @@ resolved data across a failed SET instead of querying it again.
 Outside the callback, use `Runtime::set_parameters()` and
 `Runtime::set_tagged_parameters()` for synchronous updates under the owner
 lock. A failed batch may leave an acknowledged prefix applied. These APIs
-do not register persistent data or infer ownership for service-target IIDs
-3 and 4, which return `-EOPNOTSUPP`.
+do not register persistent data. VCPM records, instance 4, go to the graph
+of the session's frontend, and return `-EOPNOTSUPP` for sessions with
+frontends on several graphs. Instance 3 returns `-EOPNOTSUPP`.
 
 ## Calibration keys
 
