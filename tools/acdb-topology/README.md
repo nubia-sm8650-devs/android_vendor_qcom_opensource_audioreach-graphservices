@@ -29,8 +29,12 @@ must match a stored one.
 Use repeated `--device` options to restrict the PAL device profiles.
 Supply `--device-pp-type` for DevicePPType-qualified assignments and
 `--context NAME=VALUE` for other XML conditions, such as CustomConfig.
-Conditions are not inferred from missing context. Reported board
-candidates and native parameters retain their separate provenance.
+A condition the context does not supply stays open. The endpoint then binds
+only when every assignment that could have produced the selection's keys is
+usable and leads to the same port, and the binding lists `open_conditions`.
+A device profile that overrides its backend per usecase or custom
+configuration keeps the endpoint unresolved. Reported board candidates and
+native parameters retain their separate provenance.
 
 Haptics backend selection follows the resource-manager setting
 `haptics_through_wsa`. When enabled, nested haptics backend overrides apply
@@ -88,7 +92,31 @@ relax interface, ambiguity or corpus-conflict checks.
 
 Use a JSON `null` for a selector known to be absent, such as
 `"CustomConfig": null` when no device custom configuration is set. An omitted
-selector remains unknown and blocks qualification if a candidate requires it.
+selector stays open as described above.
+
+Pass `--unavailable FILE` to name the PAL devices and exact graph-key
+selections a board cannot use. Each entry needs a reason.
+
+```json
+{
+  "version": 1,
+  "devices": [
+    {"device": "PAL_DEVICE_IN_FM_TUNER", "reason": "No FM tuner link."}
+  ],
+  "selections": [
+    {"graph_keys": [["0xa2000000", "0xa2000004"]],
+     "reason": "The graph's endpoint contradicts the board's profile."}
+  ]
+}
+```
+
+Board candidates for unavailable devices are skipped. A selection is
+excluded when one of its endpoints has only unavailable candidates or when
+it is listed, and `excluded` in the report gives each one with its index in
+the input corpus. Links from kept selections to modules that only excluded
+selections own are dropped and listed in `corpus.excluded_references`.
+Devices must appear in the board inputs and listed selections must match an
+input selection.
 
 ## Corpus declarations
 
