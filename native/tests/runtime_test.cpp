@@ -939,8 +939,27 @@ int main()
     ar_topology::SessionId loopback = 0;
     auto capture_config = configuration(2);
     capture_config.flags = PCM_IN;
-    assert(loopback_runtime.open({{{10, 2}}}, {configuration(2), capture_config},
+    assert(loopback_runtime.open({{{10, 2}}}, {configuration(2), configuration(2)},
                                  loopback, d, initialize, &offload_init) ==
-           -EOPNOTSUPP);
-    assert(d.empty() && open_pcms.empty());
+           -EINVAL);
+    assert(d.empty() && !loopback && open_pcms.empty());
+    assert(!loopback_runtime.open({{{10, 2}}}, {capture_config, configuration(2)},
+                                  loopback, d, initialize, &offload_init));
+    assert(d.size() == 2 && d[0].id == 2 && d[1].id == 2);
+    assert(!(d[0].handle->flags & PCM_IN) && (d[1].handle->flags & PCM_IN));
+    assert(!loopback_runtime.start(loopback));
+
+    for (const auto &stream : d) {
+        assert(stream.handle->state == SNDRV_PCM_STATE_RUNNING);
+        assert(stream.handle->stop_threshold ==
+               snd_pcm_uframes_t(stream.handle->buffer_frames) << 20);
+    }
+
+    assert(loopback_runtime.sync_pcm(loopback, 2, sync) == -EOPNOTSUPP);
+    assert(loopback_runtime.read_event(loopback, 2, event) == -EOPNOTSUPP);
+    assert(!loopback_runtime.stop(loopback));
+    assert(d[0].handle->state == SNDRV_PCM_STATE_SETUP &&
+           d[1].handle->state == SNDRV_PCM_STATE_SETUP);
+    assert(!loopback_runtime.close(loopback));
+    assert(open_pcms.empty());
 }

@@ -96,16 +96,20 @@ struct Runtime::Impl {
         if (found == sessions.end())
             return -ENOENT;
 
+        bool matched = false;
+
         for (const auto &frontend : found->second.plan.frontends) {
             if (frontend.pcm_id != pcm)
                 continue;
 
-            capture = frontend.capture;
+            if (matched)
+                return -EOPNOTSUPP;
 
-            return 0;
+            capture = frontend.capture;
+            matched = true;
         }
 
-        return -ENOENT;
+        return matched ? 0 : -ENOENT;
     }
 
     int release(SessionId id)
@@ -401,11 +405,11 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         if (pcms.size() != session.plan.frontends.size())
             return -EINVAL;
 
-        std::set<uint32_t> requested, planned;
+        std::set<std::pair<uint32_t, bool>> requested;
+        std::vector<const Pcm *> configs;
 
         for (const auto &frontend : session.plan.frontends) {
-            if (frontend.mode == FrontendMode::compress ||
-                !planned.insert(frontend.pcm_id).second)
+            if (frontend.mode == FrontendMode::compress)
                 return -EOPNOTSUPP;
         }
 
@@ -416,14 +420,16 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
                 return -EBUSY;
 
             for (const auto &pcm : pcms) {
-                if (pcm.id == frontend.pcm_id)
+                if (pcm.id == frontend.pcm_id &&
+                    bool(pcm.flags & PCM_IN) == frontend.capture)
                     config = &pcm;
             }
 
-            if (!config || !requested.insert(config->id).second ||
-                bool(config->flags & PCM_IN) != frontend.capture)
+            if (!config ||
+                !requested.emplace(config->id, frontend.capture).second)
                 return -EINVAL;
 
+            configs.push_back(config);
             session.streams.push_back({frontend.pcm_id, nullptr});
             session.streams.back().config = config->config;
         }
@@ -500,15 +506,12 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         if (status >= 0) {
             status = 0;
 
-            for (auto &stream : active.streams) {
-                for (const auto &pcm : pcms) {
-                    if (pcm.id != stream.id)
-                        continue;
+            for (size_t i = 0; i < active.streams.size(); i++) {
+                auto &stream = active.streams[i];
+                auto config = configs[i]->config;
 
-                    auto config = pcm.config;
-                    stream.handle = pcm_open(impl->card, pcm.id, pcm.flags,
-                                              &config);
-                }
+                stream.handle = pcm_open(impl->card, configs[i]->id,
+                                          configs[i]->flags, &config);
 
                 if (!stream.handle || !pcm_is_ready(stream.handle)) {
                     status = -EIO;
