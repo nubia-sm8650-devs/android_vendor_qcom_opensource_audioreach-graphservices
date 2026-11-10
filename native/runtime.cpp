@@ -177,7 +177,7 @@ struct Runtime::Impl {
 
                     if (!config.backend.first.empty() &&
                         config.backend != backend.id)
-                        return -EINVAL;
+                        continue;
 
                     matched.insert(backend.id);
                     if (matched.size() > 1)

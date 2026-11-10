@@ -585,6 +585,27 @@ static void media_configuration()
         -EOPNOTSUPP);
     assert(!a && x.empty() && open_pcms.empty());
 
+    controls.controls["other rate"].enums = {"96000", "16000"};
+    controls.controls["other channels"].enums = {"1", "2"};
+    controls.controls["other format"].enums = {"S32_LE", "S16_LE"};
+    controls.controls["other data_format"].enums = {
+        "Topology", "Compressed over PCM", "Fixed Point"};
+    HardwareConfig speaker{{{10, 99}}, config, {"/dais", 16}};
+    HardwareConfig microphone{{{10, 99}}, {16000, 1, 1, "S16_LE"},
+                              {"/dais", 120}};
+    assert(!ambiguous.acquire({speaker.selection},
+        {configuration(1), configuration(4)}, {speaker, microphone}, a, x));
+    assert(controls.controls.at("backend rate").enabled == 1);
+    assert(controls.controls.at("backend channels").enabled == 1);
+    assert(controls.controls.at("other rate").enabled == 1);
+    assert(!controls.controls.at("other channels").enabled);
+    assert(!ambiguous.close(a));
+    a = 0;
+    x.clear();
+    assert(ambiguous.acquire({speaker.selection},
+        {configuration(1), configuration(4)}, {speaker}, a, x) == -EINVAL);
+    assert(!a && x.empty() && open_pcms.empty());
+
     backend["controls"].removeMember("channels");
     Bindings without_channels(input);
     Runtime missing_channels(0, &controls, without_channels);
