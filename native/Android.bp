@@ -4,6 +4,11 @@ filegroup {
 }
 
 filegroup {
+    name: "ar-topology-startup-sources",
+    srcs: ["startup.cpp"],
+}
+
+filegroup {
     name: "ar-topology-runtime-sources",
     srcs: [
         "bindings.cpp",
@@ -19,7 +24,10 @@ filegroup {
 cc_library_shared {
     name: "libar-topology",
     vendor: true,
-    srcs: [":ar-topology-runtime-sources"],
+    srcs: [
+        ":ar-topology-startup-sources",
+        ":ar-topology-runtime-sources",
+    ],
     export_include_dirs: ["include"],
     export_shared_lib_headers: ["libtinyalsa"],
     cpp_std: "c++17",
@@ -77,6 +85,27 @@ cc_test_host {
     cppflags: ["-fexceptions"],
     cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],
     ldflags: ["-Wl,--wrap=open,--wrap=close,--wrap=ioctl"],
+    gtest: false,
+    target: {
+        darwin: {
+            enabled: false,
+        },
+    },
+}
+
+cc_test_host {
+    name: "ar-topology-startup-test",
+    srcs: [
+        "bindings.cpp",
+        "startup.cpp",
+        "tests/startup_test.cpp",
+    ],
+    local_include_dirs: ["include"],
+    include_dirs: ["external/tinyalsa/include"],
+    shared_libs: ["libjsoncpp"],
+    cpp_std: "c++17",
+    cppflags: ["-fexceptions"],
+    cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],
     gtest: false,
     target: {
         darwin: {
