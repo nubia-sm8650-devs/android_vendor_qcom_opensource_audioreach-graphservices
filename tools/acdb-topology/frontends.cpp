@@ -181,83 +181,101 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
         uint32_t sg = read_number(binding["subgraph"].asString());
         std::string direction = binding["direction"].asString();
         std::string mode = binding["mode"].asString();
+        bool duplex = direction == "duplex";
         if (pcm > uint32_t(std::numeric_limits<int32_t>::max()) ||
             !roots.count(sg) || !pcm_ids.insert(pcm).second ||
             !root_ids.insert(sg).second ||
-            (direction != "playback" && direction != "capture") ||
+            (direction != "playback" && direction != "capture" && !duplex) ||
             (mode != "pcm" && mode != "hostless" && mode != "compress"))
             throw std::runtime_error("Unsupported or repeated PCM binding");
 
         const auto &root = roots.at(sg);
-        bool playback = direction == "playback";
-        uint32_t module = 0;
-        unsigned hosts = 0;
-        bool decoder = false, encoder = false;
+        std::vector<std::string> directions;
 
-        for (auto [instance, type] : root.modules) {
-            decoder |= type == placeholder_decoder;
-            encoder |= type == placeholder_encoder;
+        if (duplex)
+            directions = {"playback", "capture"};
+        else
+            directions = {direction};
 
-            std::string role = module_widget_type(type);
-            if (role != "aif_in" && role != "aif_out")
-                continue;
-
-            hosts++;
-
-            if (role == (playback ? "aif_in" : "aif_out"))
-                module = instance;
-        }
-
-        if (mode == "hostless") {
-            if (hosts || (binding.isMember("module") &&
-                          (!binding["module"].isUInt() ||
-                           !root.modules.count(binding["module"].asUInt()))))
-                throw std::runtime_error("Invalid hostless PCM root");
-
-            module = binding.isMember("module") ?
-                binding["module"].asUInt() :
-                hostless_module(root, playback, edges);
-        } else if (hosts != 1 || !module || binding.isMember("module")) {
-            throw std::runtime_error("PCM root lacks a unique host endpoint");
-        } else if (mode == "pcm" && (decoder || encoder)) {
-            throw std::runtime_error("A codec graph needs a compressed binding");
-        } else if (mode == "compress" &&
-                   (!playback || !decoder ||
-                    root.modules.at(module) != write_shared_memory)) {
-            throw std::runtime_error("Unsupported compressed PCM root");
-        }
+        if (duplex && (mode != "hostless" || binding.isMember("module")))
+            throw std::runtime_error("Unsupported duplex PCM binding");
 
         if (root.hardware)
             throw std::runtime_error("A hardware graph cannot own a frontend");
 
         std::string name = "ar_pcm" + std::to_string(pcm);
         std::string dai = "ar_fe" + std::to_string(root.graph);
-        std::string stream = dai + "_" + direction;
-        capabilities(out, stream, binding["capabilities"]);
+        std::ostringstream streams;
+
+        for (const auto &stream_direction : directions) {
+            bool playback = stream_direction == "playback";
+            uint32_t module = 0;
+            unsigned hosts = 0;
+            bool decoder = false, encoder = false;
+
+            for (auto [instance, type] : root.modules) {
+                decoder |= type == placeholder_decoder;
+                encoder |= type == placeholder_encoder;
+
+                std::string role = module_widget_type(type);
+                if (role != "aif_in" && role != "aif_out")
+                    continue;
+
+                hosts++;
+
+                if (role == (playback ? "aif_in" : "aif_out"))
+                    module = instance;
+            }
+
+            if (mode == "hostless") {
+                if (hosts || (binding.isMember("module") &&
+                              (!binding["module"].isUInt() ||
+                               !root.modules.count(binding["module"].asUInt()))))
+                    throw std::runtime_error("Invalid hostless PCM root");
+
+                module = binding.isMember("module") ?
+                    binding["module"].asUInt() :
+                    hostless_module(root, playback, edges);
+            } else if (hosts != 1 || !module || binding.isMember("module")) {
+                throw std::runtime_error("PCM root lacks a unique host endpoint");
+            } else if (mode == "pcm" && (decoder || encoder)) {
+                throw std::runtime_error(
+                    "A codec graph needs a compressed binding");
+            } else if (mode == "compress" &&
+                       (!playback || !decoder ||
+                        root.modules.at(module) != write_shared_memory)) {
+                throw std::runtime_error("Unsupported compressed PCM root");
+            }
+
+            std::string stream = dai + "_" + stream_direction;
+            capabilities(out, stream, binding["capabilities"]);
+            streams << "    pcm.\"" << stream_direction
+                    << "\" { capabilities \"" << stream << "\" }\n";
+            std::string node = "m" + std::to_string(module);
+
+            if (playback)
+                line(paths, node, "", stream);
+            else
+                line(paths, stream, "", node);
+
+            Json::Value frontend;
+            frontend["pcm_id"] = pcm;
+            frontend["subgraph"] = sg;
+            frontend["graph_id"] = root.graph;
+            frontend["module"] = module;
+            frontend["mode"] = mode;
+            frontend["direction"] = stream_direction;
+            frontend["name"] = name;
+            frontend["dai_name"] = dai;
+            frontend["stream_widget"] = stream;
+            report["frontends"].append(frontend);
+        }
+
         out << "SectionPCM.\"" << name << "\" {\n"
             << "    id \"" << pcm << "\"\n"
             << (mode == "compress" ? "    compress \"1\"\n" : "")
             << "    dai.\"" << dai << "\" { id \"" << root.graph << "\" }\n"
-            << "    pcm.\"" << direction << "\" { capabilities \"" << stream
-            << "\" }\n}\n\n";
-        std::string node = "m" + std::to_string(module);
-
-        if (direction == "playback")
-            line(paths, node, "", stream);
-        else
-            line(paths, stream, "", node);
-
-        Json::Value frontend;
-        frontend["pcm_id"] = pcm;
-        frontend["subgraph"] = sg;
-        frontend["graph_id"] = root.graph;
-        frontend["module"] = module;
-        frontend["mode"] = mode;
-        frontend["direction"] = direction;
-        frontend["name"] = name;
-        frontend["dai_name"] = dai;
-        frontend["stream_widget"] = stream;
-        report["frontends"].append(frontend);
+            << streams.str() << "}\n\n";
     }
 
     for (const auto &[source, sink] : edges)
@@ -295,9 +313,14 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
         for (uint32_t graph : selected)
             selection["tuning"].append(tuning.at(graph));
 
+        std::set<uint32_t> listed;
+
         for (const auto &frontend : report["frontends"]) {
-            if (selected.count(frontend["graph_id"].asUInt()))
-                selection["frontends"].append(frontend["pcm_id"]);
+            uint32_t pcm = frontend["pcm_id"].asUInt();
+
+            if (selected.count(frontend["graph_id"].asUInt()) &&
+                listed.insert(pcm).second)
+                selection["frontends"].append(pcm);
         }
 
         for (const auto &name : selection["references"]) {

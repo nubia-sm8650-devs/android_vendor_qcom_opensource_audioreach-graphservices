@@ -777,6 +777,29 @@ class CompilerTest(unittest.TestCase):
                     self.report.read_text())["corpus"]["frontends"]
                 self.assertEqual(frontend["module"], module)
 
+        completed = run(generic_fixture(), "duplex", "hostless")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(self.report.read_text())["corpus"]
+        self.assertEqual([(f["pcm_id"], f["direction"], f["module"])
+                          for f in report["frontends"]],
+                         [(3, "playback", 0x4001), (3, "capture", 0x4002)])
+        self.assertEqual(report["selections"][0]["frontends"], [3])
+        self.read_topology()
+        binary = (self.root / "topology.bin").read_bytes()
+        pcm = pcms(binary)[3]
+        self.assertEqual((pcm["playback"], pcm["capture"]), (1, 1))
+        routes = dapm_routes(binary)
+        for frontend in report["frontends"]:
+            node = f'm{frontend["module"]}'
+            stream = frontend["stream_widget"]
+            self.assertIn((node, "", stream) if frontend["direction"] ==
+                          "playback" else (stream, "", node), routes)
+
+        for mode, extra in (("pcm", {}), ("hostless", {"module": 0x4001})):
+            completed = run(generic_fixture(), "duplex", mode, **extra)
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            self.assertEqual(self.output.read_text(), "retain")
+
         completed = run(fanout_fixture(), "playback", "hostless")
         self.assertEqual(completed.returncode, 0, completed.stderr)
         completed = run(fanout_fixture(), "capture", "hostless")
