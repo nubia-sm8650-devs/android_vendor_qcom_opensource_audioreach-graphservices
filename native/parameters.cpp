@@ -16,10 +16,27 @@ namespace ar_topology
 namespace
 {
 
+constexpr uint32_t vcpm_instance = 4;
+
 struct Run {
     uint32_t graph;
     size_t begin, end;
 };
+
+int frontend_graph(const Plan &plan, uint32_t &graph)
+{
+    std::set<uint32_t> graphs;
+
+    for (const auto &frontend : plan.frontends)
+        graphs.insert(frontend.graph_id);
+
+    if (graphs.size() != 1)
+        return -EOPNOTSUPP;
+
+    graph = *graphs.begin();
+
+    return 0;
+}
 
 int records(const Plan &plan, const void *data, size_t size, size_t applied,
              const std::set<uint32_t> *scope, std::vector<Run> &runs)
@@ -47,11 +64,21 @@ int records(const Plan &plan, const void *data, size_t size, size_t applied,
         if (payload > remaining)
             return -EINVAL;
 
-        auto owner = plan.modules.find(header[0]);
-        if (owner == plan.modules.end())
-            return header[0] == 3 || header[0] == 4 ? -EOPNOTSUPP : -ENOENT;
+        uint32_t graph;
 
-        if (scope && !scope->count(owner->second))
+        if (header[0] == vcpm_instance) {
+            int status = frontend_graph(plan, graph);
+            if (status)
+                return status;
+        } else {
+            auto owner = plan.modules.find(header[0]);
+            if (owner == plan.modules.end())
+                return header[0] == 3 ? -EOPNOTSUPP : -ENOENT;
+
+            graph = owner->second;
+        }
+
+        if (scope && !scope->count(graph))
             return -ENOENT;
 
         size_t end = offset + sizeof(header) + payload;
@@ -59,10 +86,10 @@ int records(const Plan &plan, const void *data, size_t size, size_t applied,
             return -EINVAL;
 
         if (offset >= applied) {
-            if (!runs.empty() && runs.back().graph == owner->second)
+            if (!runs.empty() && runs.back().graph == graph)
                 runs.back().end = end;
             else
-                runs.push_back({owner->second, offset, end});
+                runs.push_back({graph, offset, end});
         }
 
         offset = end;

@@ -737,8 +737,35 @@ static void calibration()
     assert(open_pcms.empty());
 }
 
+static void vcpm_parameters()
+{
+    ar_topology::Bindings bindings(fixture());
+    auto controls = make_mixer();
+    ar_topology::Runtime runtime(0, &controls, bindings);
+    ar_topology::SessionId single = 0, pair = 0;
+    std::vector<ar_topology::Stream> a, b;
+    uint32_t vsid[] = {4, 0x080011bc, 4, 0, 0x11c05000, 0};
+    uint32_t amdb[] = {3, 0x08001026, 0, 0};
+
+    assert(!runtime.acquire({{{10, 1}}}, {configuration(1)}, single, a));
+    assert(!runtime.set_parameters(single, vsid, sizeof(vsid)));
+    const auto &bytes = controls.controls.at("set1").bytes;
+    assert(bytes.size() == 8 + sizeof(vsid));
+    assert(!std::memcmp(bytes.data() + 8, vsid, sizeof(vsid)));
+    assert(runtime.set_parameters(single, amdb, sizeof(amdb)) == -EOPNOTSUPP);
+    assert(!runtime.close(single));
+
+    assert(!runtime.acquire({{{10, 1}}, {{10, 2}}},
+                            {configuration(1), configuration(2)}, pair, b));
+    controls.controls.at("set1").bytes.clear();
+    assert(runtime.set_parameters(pair, vsid, sizeof(vsid)) == -EOPNOTSUPP);
+    assert(controls.controls.at("set1").bytes.empty());
+    assert(!runtime.close(pair));
+}
+
 int main()
 {
+    vcpm_parameters();
     calibration();
     media_configuration();
     ar_topology::Bindings bindings(fixture());
