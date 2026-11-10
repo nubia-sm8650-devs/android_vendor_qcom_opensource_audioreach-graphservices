@@ -11,6 +11,10 @@ namespace acdb_topology
 namespace
 {
 
+constexpr uint32_t write_shared_memory = 0x07001000;
+constexpr uint32_t placeholder_encoder = 0x07001008;
+constexpr uint32_t placeholder_decoder = 0x07001009;
+
 struct Root {
     uint32_t graph;
     std::map<uint32_t, uint32_t> modules;
@@ -154,21 +158,26 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
             !roots.count(sg) || !pcm_ids.insert(pcm).second ||
             !root_ids.insert(sg).second ||
             (direction != "playback" && direction != "capture") ||
-            (mode != "pcm" && mode != "hostless"))
+            (mode != "pcm" && mode != "hostless" && mode != "compress"))
             throw std::runtime_error("Unsupported or repeated PCM binding");
 
         const auto &root = roots.at(sg);
+        bool playback = direction == "playback";
         uint32_t module = 0;
         unsigned hosts = 0;
+        bool decoder = false, encoder = false;
 
         for (auto [instance, type] : root.modules) {
+            decoder |= type == placeholder_decoder;
+            encoder |= type == placeholder_encoder;
+
             std::string role = module_widget_type(type);
             if (role != "aif_in" && role != "aif_out")
                 continue;
 
             hosts++;
 
-            if (role == (direction == "playback" ? "aif_in" : "aif_out"))
+            if (role == (playback ? "aif_in" : "aif_out"))
                 module = instance;
         }
 
@@ -180,6 +189,12 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
             module = binding["module"].asUInt();
         } else if (hosts != 1 || !module || binding.isMember("module")) {
             throw std::runtime_error("PCM root lacks a unique host endpoint");
+        } else if (mode == "pcm" && (decoder || encoder)) {
+            throw std::runtime_error("A codec graph needs a compressed binding");
+        } else if (mode == "compress" &&
+                   (!playback || !decoder ||
+                    root.modules.at(module) != write_shared_memory)) {
+            throw std::runtime_error("Unsupported compressed PCM root");
         }
 
         if (root.hardware)
@@ -191,6 +206,7 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
         capabilities(out, stream, binding["capabilities"]);
         out << "SectionPCM.\"" << name << "\" {\n"
             << "    id \"" << pcm << "\"\n"
+            << (mode == "compress" ? "    compress \"1\"\n" : "")
             << "    dai.\"" << dai << "\" { id \"" << root.graph << "\" }\n"
             << "    pcm.\"" << direction << "\" { capabilities \"" << stream
             << "\" }\n}\n\n";

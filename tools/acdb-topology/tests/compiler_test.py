@@ -721,6 +721,67 @@ class CompilerTest(unittest.TestCase):
                 self.assertEqual(self.output.read_text(), "retain")
                 self.assertEqual(manifest.read_text(), "retain bindings")
 
+    def test_frontend_modes_follow_graph_contents(self):
+        dts = self.root / "empty.dts"
+        dtb = self.root / "empty.dtb"
+        dts.write_text("/dts-v1/; / {};")
+        subprocess.run(["dtc", "-I", "dts", "-O", "dtb", "-o", str(dtb),
+                        str(dts)], check=True, capture_output=True)
+        resources = self.root / "resources.xml"
+        resources.write_text("<resource_manager_info><device_profile/>"
+                             "</resource_manager_info>")
+        usecases = self.root / "usecases.xml"
+        usecases.write_text("<graph_key_value_pair_info><devices/><devicepps/>"
+                            "</graph_key_value_pair_info>")
+        hardware = self.root / "widgets.json"
+        hardware.write_text('{"version":1,"widgets":[]}')
+        bindings = self.root / "pcms.json"
+        options = ["--corpus", "--graph-id", "256", "--output", str(self.output),
+                   "--resource-manager", str(resources), "--usecase-kv",
+                   str(usecases), "--board-dtb", str(dtb),
+                   "--hardware-widgets", str(hardware),
+                   "--pcm-bindings", str(bindings)]
+        caps = {"formats": ["S16_LE"], "rates": [48000],
+                "channels_min": 1, "channels_max": 2}
+
+        def run(source, direction, mode, **extra):
+            source["graph_keys"] = [["0xa1000000", "0xa1000001"]]
+            bindings.write_text(json.dumps({"version": 1, "pcms": [
+                {"id": 3, "subgraph": "0xb0000001", "direction": direction,
+                 "mode": mode, "capabilities": caps, **extra}]}))
+            self.output.write_text("retain")
+            return self.run_exports([source], *options)
+
+        def retyped(*types):
+            source = generic_fixture()
+            graph = bytes.fromhex(source["graph_open"])
+            for old, new in zip((0x07001011, 0x07001002), types):
+                graph = graph.replace(words(old), words(new))
+            source["graph_open"] = graph.hex()
+            return source
+
+        completed = run(retyped(0x07001000, 0x07001009), "playback",
+                        "compress")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.read_topology()
+        pcm = pcms((self.root / "topology.bin").read_bytes())[3]
+        self.assertEqual((pcm["compress"], pcm["playback"]), (1, 1))
+        frontend, = json.loads(self.report.read_text())["corpus"]["frontends"]
+        self.assertEqual(frontend["mode"], "compress")
+
+        for source, direction, mode in (
+                (retyped(0x07001000, 0x07001009), "playback", "pcm"),
+                (retyped(0x07001001, 0x07001008), "capture", "pcm"),
+                (retyped(0x07001001, 0x07001008), "capture", "compress"),
+                (retyped(0x07001006, 0x07001009), "playback", "compress"),
+                (retyped(0x07001000, 0x07001002), "playback", "compress")):
+            with self.subTest(types=source["graph_open"][-80:], mode=mode):
+                completed = run(source, direction, mode)
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                self.assertIn("compressed binding" if mode == "pcm" else
+                              "Unsupported compressed", completed.stderr)
+                self.assertEqual(self.output.read_text(), "retain")
+
     def read_topology(self, kinds=None, blocks=None):
         if not shutil.which("alsatplg"):
             self.skipTest("alsatplg is not installed")
