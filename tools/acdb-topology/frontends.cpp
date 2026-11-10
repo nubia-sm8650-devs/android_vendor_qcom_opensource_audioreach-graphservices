@@ -12,6 +12,7 @@ namespace
 {
 
 constexpr uint32_t write_shared_memory = 0x07001000;
+constexpr uint32_t read_shared_memory = 0x07001001;
 constexpr uint32_t placeholder_encoder = 0x07001008;
 constexpr uint32_t placeholder_decoder = 0x07001009;
 
@@ -242,8 +243,9 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
                 throw std::runtime_error(
                     "A codec graph needs a compressed binding");
             } else if (mode == "compress" &&
-                       (!playback || !decoder ||
-                        root.modules.at(module) != write_shared_memory)) {
+                       (!(playback ? decoder : encoder) ||
+                        root.modules.at(module) != (playback ?
+                            write_shared_memory : read_shared_memory))) {
                 throw std::runtime_error("Unsupported compressed PCM root");
             }
 

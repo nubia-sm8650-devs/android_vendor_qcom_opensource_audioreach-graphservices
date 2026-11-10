@@ -809,19 +809,21 @@ class CompilerTest(unittest.TestCase):
                         module=0x4003)
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-        completed = run(retyped(0x07001000, 0x07001009), "playback",
-                        "compress")
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.read_topology()
-        pcm = pcms((self.root / "topology.bin").read_bytes())[3]
-        self.assertEqual((pcm["compress"], pcm["playback"]), (1, 1))
-        frontend, = json.loads(self.report.read_text())["corpus"]["frontends"]
-        self.assertEqual(frontend["mode"], "compress")
+        for types, direction in (((0x07001000, 0x07001009), "playback"),
+                                 ((0x07001001, 0x07001008), "capture")):
+            completed = run(retyped(*types), direction, "compress")
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.read_topology()
+            pcm = pcms((self.root / "topology.bin").read_bytes())[3]
+            self.assertEqual((pcm["compress"], pcm[direction]), (1, 1))
+            frontend, = json.loads(self.report.read_text())["corpus"]["frontends"]
+            self.assertEqual(frontend["mode"], "compress")
 
         for source, direction, mode in (
                 (retyped(0x07001000, 0x07001009), "playback", "pcm"),
                 (retyped(0x07001001, 0x07001008), "capture", "pcm"),
-                (retyped(0x07001001, 0x07001008), "capture", "compress"),
+                (retyped(0x07001007, 0x07001008), "capture", "compress"),
+                (retyped(0x07001001, 0x07001009), "capture", "compress"),
                 (retyped(0x07001006, 0x07001009), "playback", "compress"),
                 (retyped(0x07001000, 0x07001002), "playback", "compress")):
             with self.subTest(types=source["graph_open"][-80:], mode=mode):
