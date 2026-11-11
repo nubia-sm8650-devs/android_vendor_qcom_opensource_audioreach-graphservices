@@ -205,6 +205,11 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
         if (root.hardware)
             throw std::runtime_error("A hardware graph cannot own a frontend");
 
+        if (binding.isMember("backend") &&
+            (!binding["backend"].isString() ||
+             binding["backend"].asString().empty() || mode == "hostless"))
+            throw std::runtime_error("Invalid PCM backend binding");
+
         std::string name = "ar_pcm" + std::to_string(pcm);
         std::string dai = "ar_fe" + std::to_string(root.graph);
         std::ostringstream streams;
@@ -262,6 +267,18 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
                 line(paths, stream, "", node);
 
             Json::Value frontend;
+
+            if (binding.isMember("backend")) {
+                std::string backend = binding["backend"].asString();
+
+                if (playback)
+                    line(paths, backend, "", node);
+                else
+                    line(paths, node, "", backend);
+
+                frontend["backend"] = backend;
+            }
+
             frontend["pcm_id"] = pcm;
             frontend["subgraph"] = sg;
             frontend["graph_id"] = root.graph;

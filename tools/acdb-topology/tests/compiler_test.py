@@ -811,6 +811,23 @@ class CompilerTest(unittest.TestCase):
                         module=0x4003)
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+        completed = run(retyped(0x07001000, 0x07001002), "playback", "pcm",
+                        backend="Dummy Playback")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        frontend, = json.loads(self.report.read_text())["corpus"]["frontends"]
+        self.assertEqual(frontend["backend"], "Dummy Playback")
+        self.read_topology()
+        self.assertIn(("Dummy Playback", "", f'm{frontend["module"]}'),
+                      dapm_routes((self.root / "topology.bin").read_bytes()))
+
+        for source, mode, backend in (
+                (retyped(0x07001000, 0x07001002), "pcm", ""),
+                (retyped(0x07001000, 0x07001002), "pcm", 3),
+                (generic_fixture(), "hostless", "Dummy Playback")):
+            completed = run(source, "playback", mode, backend=backend)
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            self.assertIn("backend binding", completed.stderr)
+
         for types, direction in (((0x07001000, 0x07001009), "playback"),
                                  ((0x07001001, 0x07001008), "capture")):
             completed = run(retyped(*types), direction, "compress")
