@@ -45,6 +45,11 @@ public:
                   const std::vector<HardwareConfig> &hardware, SessionId &id,
                   std::vector<Stream> &streams,
                   const std::vector<Keys> &calibration = {});
+    int reroute(SessionId id, const std::vector<Keys> &requests,
+                 const std::vector<HardwareConfig> &hardware,
+                 const std::vector<Keys> &calibration = {},
+                 ConfigureParameters configure = nullptr,
+                 void *context = nullptr);
     int prepare(SessionId id, Configure configure = nullptr,
                  void *context = nullptr);
     int prepare_parameters(SessionId id, ConfigureParameters configure,

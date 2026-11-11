@@ -9,6 +9,7 @@
 #include <mutex>
 #include <new>
 #include <stdexcept>
+#include <tuple>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -91,6 +92,7 @@ struct Runtime::Impl {
         std::map<BackendId, std::vector<uint32_t>> channel_maps;
         std::vector<Keys> selections;
         std::map<Keys, Keys> calibration;
+        std::set<uint32_t> untuned;
         bool compress = false;
         snd_compr_params params{};
         bool configured = false;
@@ -177,7 +179,9 @@ struct Runtime::Impl {
     }
 
     int formats(Session &session, const std::vector<HardwareConfig> *hardware,
-                   std::vector<MediaWrite> &writes)
+                   std::vector<MediaWrite> &writes,
+                   const Session *rerouted = nullptr,
+                   const std::set<BackendId> &retained = {})
     {
         session.managed_media = hardware != nullptr;
         if (hardware && session.plan.backends.size() !=
@@ -250,6 +254,15 @@ struct Runtime::Impl {
 
             for (const auto &[port, media] : prior.media) {
                 auto requested = session.media.find(port);
+
+                if (&prior == rerouted && !retained.count(port)) {
+                    if (requested != session.media.end() &&
+                        requested->second == media)
+                        occupied.insert(port);
+
+                    continue;
+                }
+
                 if (requested != session.media.end() &&
                     !(requested->second == media))
                     return -EBUSY;
@@ -309,7 +322,8 @@ struct Runtime::Impl {
         }
     }
 
-    bool exposes_untuned(const Plan &plan, const std::set<uint32_t> &tuned)
+    bool exposes_untuned(const Plan &plan, const std::set<uint32_t> &tuned,
+                         const Session *skip = nullptr)
     {
         std::set<std::string> paths = plan.paths;
         std::set<uint32_t> roots;
@@ -319,6 +333,10 @@ struct Runtime::Impl {
 
         for (const auto &[id, session] : sessions) {
             (void)id;
+
+            if (&session == skip)
+                continue;
+
             paths.insert(session.plan.paths.begin(), session.plan.paths.end());
 
             for (const auto &frontend : session.plan.frontends)
@@ -327,6 +345,9 @@ struct Runtime::Impl {
 
         for (const auto &[id, session] : sessions) {
             (void)id;
+
+            if (&session == skip)
+                continue;
 
             for (const auto &frontend : session.plan.frontends) {
                 std::set<uint32_t> reached{frontend.graph_id};
@@ -358,6 +379,57 @@ struct Runtime::Impl {
         }
 
         return false;
+    }
+
+    int calibrate(Session &session, const std::vector<Keys> &requests,
+                  const std::vector<Keys> &calibration)
+    {
+        for (size_t i = 0; i < requests.size(); i++) {
+            auto selection = requests[i];
+            std::sort(selection.begin(), selection.end());
+
+            Keys keys = calibration.empty() ? Keys{} : calibration[i];
+            auto [found, added] = session.calibration.emplace(selection, keys);
+            if (added)
+                session.selections.push_back(selection);
+            else if (found->second != keys)
+                return -EINVAL;
+        }
+
+        return 0;
+    }
+
+    int resolve(const Plan &plan, std::vector<Control *> &output)
+    {
+        for (const auto *names : {&plan.references, &plan.paths,
+                                   &plan.hardware}) {
+            for (const auto &name : *names) {
+                auto *handle = mixer_get_ctl_by_name(mixer, name.c_str());
+                if (!handle)
+                    return -ENOENT;
+
+                if (mixer_ctl_get_type(handle) != MIXER_CTL_TYPE_BOOL ||
+                    mixer_ctl_get_num_values(handle) != 1)
+                    return -EINVAL;
+
+                auto [found, inserted] = controls.emplace(name,
+                                                          Control{handle});
+                (void)inserted;
+
+                if (!found->second.users) {
+                    int value = mixer_ctl_get_value(handle, 0);
+                    if (value < 0)
+                        return result(value);
+
+                    if (value)
+                        return -EBUSY;
+                }
+
+                output.push_back(&found->second);
+            }
+        }
+
+        return 0;
     }
 };
 
@@ -479,17 +551,9 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         if (status)
             return status;
 
-        for (size_t i = 0; i < requests.size(); i++) {
-            auto selection = requests[i];
-            std::sort(selection.begin(), selection.end());
-
-            Keys keys = calibration.empty() ? Keys{} : calibration[i];
-            auto [found, added] = session.calibration.emplace(selection, keys);
-            if (added)
-                session.selections.push_back(selection);
-            else if (found->second != keys)
-                return -EINVAL;
-        }
+        status = impl->calibrate(session, requests, calibration);
+        if (status)
+            return status;
 
         std::vector<Calibration> defaults;
 
@@ -506,33 +570,9 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
             }
         }
 
-        for (const auto *names : {&session.plan.references, &session.plan.paths,
-                                   &session.plan.hardware}) {
-            for (const auto &name : *names) {
-                auto *handle = mixer_get_ctl_by_name(impl->mixer, name.c_str());
-                if (!handle)
-                    return -ENOENT;
-
-                if (mixer_ctl_get_type(handle) != MIXER_CTL_TYPE_BOOL ||
-                    mixer_ctl_get_num_values(handle) != 1)
-                    return -EINVAL;
-
-                auto [found, inserted] = impl->controls.emplace(
-                    name, Impl::Control{handle});
-                (void)inserted;
-
-                if (!found->second.users) {
-                    int value = mixer_ctl_get_value(handle, 0);
-                    if (value < 0)
-                        return result(value);
-
-                    if (value)
-                        return -EBUSY;
-                }
-
-                session.controls.push_back(&found->second);
-            }
-        }
+        status = impl->resolve(session.plan, session.controls);
+        if (status)
+            return status;
 
         std::vector<Stream> output = session.streams;
 
@@ -607,6 +647,190 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         streams = std::move(output);
 
         return 0;
+    } catch (const std::bad_alloc &) {
+        return -ENOMEM;
+    }
+}
+
+int Runtime::reroute(SessionId id, const std::vector<Keys> &requests,
+                     const std::vector<HardwareConfig> &hardware,
+                     const std::vector<Keys> &calibration,
+                     ConfigureParameters configure, void *context)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    auto found = impl->sessions.find(id);
+    if (found == impl->sessions.end())
+        return -ENOENT;
+
+    auto &session = found->second;
+
+    if ((!calibration.empty() && calibration.size() != requests.size()) ||
+        (!session.managed_media && !hardware.empty()))
+        return -EINVAL;
+
+    try {
+        Impl::Session next;
+        int status = impl->bindings.select(requests, next.plan);
+        if (status)
+            return status;
+
+        auto identity = [](const Plan &plan) {
+            std::set<std::tuple<uint32_t, uint32_t, bool, FrontendMode>> result;
+
+            for (const auto &frontend : plan.frontends)
+                result.emplace(frontend.pcm_id, frontend.graph_id,
+                               frontend.capture, frontend.mode);
+
+            return result;
+        };
+
+        if (next.plan.frontends.size() != session.plan.frontends.size() ||
+            identity(next.plan) != identity(session.plan))
+            return -EXDEV;
+
+        std::set<uint32_t> tuned;
+
+        for (const auto &[other_id, other] : impl->sessions) {
+            if (other_id == id)
+                continue;
+
+            for (const auto &[graph_id, graph] : other.plan.graphs) {
+                (void)graph;
+                tuned.insert(graph_id);
+            }
+        }
+
+        if (impl->exposes_untuned(next.plan, tuned, &session))
+            return -EOPNOTSUPP;
+
+        std::set<BackendId> retained;
+
+        for (const auto &[name, backend] : session.plan.backends) {
+            (void)name;
+
+            if (next.plan.graphs.count(backend.graph))
+                retained.insert(backend.id);
+        }
+
+        std::vector<MediaWrite> media;
+        status = impl->formats(next, session.managed_media ? &hardware : nullptr,
+                               media, &session, retained);
+        if (status)
+            return status;
+
+        status = impl->calibrate(next, requests, calibration);
+        if (status)
+            return status;
+
+        std::set<uint32_t> untuned;
+        std::vector<Calibration> defaults;
+
+        for (const auto &[graph_id, graph] : next.plan.graphs) {
+            if (tuned.count(graph_id) || (session.plan.graphs.count(graph_id) &&
+                                          !session.untuned.count(graph_id)))
+                continue;
+
+            untuned.insert(graph_id);
+
+            for (const auto &selection : next.selections) {
+                if (next.plan.selections.at(selection).count(graph_id)) {
+                    defaults.push_back({graph, {},
+                                        next.calibration.at(selection)});
+                    break;
+                }
+            }
+        }
+
+        status = impl->resolve(next.plan, next.controls);
+        if (status)
+            return status;
+
+        size_t gates = next.controls.size() - next.plan.hardware.size();
+        std::set<Impl::Control *> wanted(next.controls.begin(),
+                                         next.controls.end());
+        std::set<Impl::Control *> held;
+        std::vector<Impl::Control *> kept;
+        int first = 0;
+
+        for (size_t i = session.acquired; i--;) {
+            auto *control = session.controls[i];
+
+            if (wanted.count(control)) {
+                held.insert(control);
+                kept.insert(kept.begin(), control);
+                continue;
+            }
+
+            if (control->users == 1) {
+                status = result(mixer_ctl_set_value(control->handle, 0, 0));
+                if (status < 0 && !first)
+                    first = status;
+            }
+
+            control->users--;
+        }
+
+        session.plan = std::move(next.plan);
+        session.media = std::move(next.media);
+        session.channel_maps = std::move(next.channel_maps);
+        session.selections = std::move(next.selections);
+        session.calibration = std::move(next.calibration);
+        session.untuned = std::move(untuned);
+        session.acquired = kept.size();
+        session.controls = std::move(kept);
+
+        auto enable = [&](size_t begin, size_t end) {
+            for (size_t i = begin; i < end; i++) {
+                auto *control = next.controls[i];
+
+                if (held.count(control))
+                    continue;
+
+                session.controls.push_back(control);
+                session.acquired++;
+
+                if (control->users++ == 0) {
+                    int status = result(mixer_ctl_set_value(control->handle, 0,
+                                                            1));
+                    if (status < 0) {
+                        control->users--;
+                        session.acquired--;
+                        session.controls.pop_back();
+
+                        return status;
+                    }
+                }
+            }
+
+            return 0;
+        };
+
+        status = 0;
+
+        for (const auto &write : media) {
+            status = result(mixer_ctl_set_value(write.control, 0, write.item));
+            if (status < 0)
+                break;
+        }
+
+        if (status >= 0)
+            status = enable(0, gates);
+
+        if (status >= 0)
+            status = tune(impl->mixer, defaults);
+
+        if (!status && configure) {
+            Parameters writer(impl->mixer, session.plan);
+
+            status = configure(context, writer, session.streams);
+        }
+
+        if (!status) {
+            session.untuned.clear();
+            status = enable(gates, next.controls.size());
+        }
+
+        return status ? status : first;
     } catch (const std::bad_alloc &) {
         return -ENOMEM;
     }

@@ -875,9 +875,184 @@ static void parameter_queries()
     assert(!runtime.close(session));
 }
 
+struct Rerouted {
+    mixer &controls;
+    bool seen = false;
+    bool reject = false;
+};
+
+static int rerouted(void *opaque, ar_topology::Parameters &writer,
+                    const std::vector<ar_topology::Stream> &streams) noexcept
+{
+
+    auto &value = *static_cast<Rerouted *>(opaque);
+    const auto &controls = value.controls.controls;
+
+    assert(streams.size() == 1 && streams[0].id == 2);
+    assert(controls.at("link6").enabled && controls.at("path6").enabled);
+    assert(!controls.at("hardware6").enabled);
+    assert(controls.at("set6").bytes.size() == 32);
+
+    uint32_t record[] = {0x4006, 0x08001026, 4, 0, 7, 0};
+    size_t applied = 0;
+
+    assert(!writer.set(record, sizeof(record), &applied));
+    assert(applied == sizeof(record));
+    assert(controls.at("set6").bytes.size() == 8 + sizeof(record));
+    value.seen = true;
+
+    return value.reject ? -ECANCELED : 0;
+}
+
+static void reroutes()
+{
+    auto input = fixture();
+    Json::Value selection, pair(Json::arrayValue), reference;
+
+    pair.append("0xa");
+    pair.append("7");
+    selection["graph_keys"].append(pair);
+
+    for (unsigned graph : {2, 6}) {
+        Json::Value tuning;
+
+        selection["graphs"].append(graph);
+        tuning["graph_id"] = graph;
+        tuning["subgraph"] = 0xb0000000u + graph;
+        tuning["set_control"] = "set" + std::to_string(graph);
+        tuning["modules"].append(0x4000 + graph);
+        selection["tuning"].append(tuning);
+    }
+
+    selection["references"].append("link7");
+    input["selections"].append(selection);
+    reference["name"] = "link7";
+    reference["control"] = false;
+    reference["source_graph"] = 2;
+    reference["destination_graph"] = 6;
+    reference["path_control"] = "path7";
+    input["references"].append(reference);
+
+    ar_topology::Bindings bindings(input);
+    auto controls = make_mixer();
+    controls.controls["link7"];
+    controls.controls["path7"];
+    ar_topology::Runtime runtime(0, &controls, bindings);
+    ar_topology::SessionId session = 0, other = 0;
+    std::vector<ar_topology::Stream> streams, others;
+    Rerouted state{controls};
+    Bytes custom{0x10, 0x20};
+    auto enabled = [&](std::initializer_list<const char *> names) {
+        std::set<std::string> expected(names.begin(), names.end()), actual;
+
+        for (const auto &[name, control] : controls.controls) {
+            if (!control.parameter && control.enabled)
+                actual.insert(name);
+        }
+
+        return actual == expected;
+    };
+
+    initialization_seen = true;
+    assert(!runtime.open({{{10, 2}}}, {configuration(2)}, session, streams));
+    assert(!runtime.start(session));
+    auto running = streams[0].handle->state;
+    assert(enabled({"link2", "path2", "hardware3"}));
+    assert(runtime.reroute(session + 1, {{{10, 6}}}, {}) == -ENOENT);
+    assert(runtime.reroute(session, {{{10, 1}}}, {}) == -EXDEV);
+    assert(runtime.reroute(session, {{{10, 6}}}, {}, {{}, {}}) == -EINVAL);
+    assert(enabled({"link2", "path2", "hardware3"}));
+
+    initialization_seen = true;
+    assert(!runtime.open({{{10, 1}}}, {configuration(1)}, other, others));
+    assert(runtime.reroute(session, {{{10, 6}}}, {}) == -EOPNOTSUPP);
+    assert(!runtime.close(other));
+    assert(enabled({"link2", "path2", "hardware3"}));
+
+    controls.controls.at("set2").bytes = custom;
+    controls.controls.at("set3").bytes = custom;
+    state.reject = true;
+    assert(runtime.reroute(session, {{{10, 6}}}, {}, {}, rerouted, &state) ==
+           -ECANCELED);
+    assert(state.seen);
+    assert(enabled({"link2", "path2", "hardware3", "link6", "path6"}));
+
+    state.seen = state.reject = false;
+    controls.controls.at("set6").bytes.clear();
+    assert(!runtime.reroute(session, {{{10, 6}}}, {}, {}, rerouted, &state));
+    assert(state.seen);
+    assert(enabled({"link2", "path2", "hardware3", "link6", "path6",
+                    "hardware6"}));
+    assert(controls.controls.at("set2").bytes == custom);
+    assert(controls.controls.at("set3").bytes == custom);
+    assert(streams[0].handle->state == running);
+
+    controls.controls.at("set6").bytes = custom;
+    assert(!runtime.reroute(session, {{{10, 7}}}, {}));
+    assert(enabled({"link7", "path7", "hardware6"}));
+    assert(controls.controls.at("set6").bytes == custom);
+
+    controls.controls.at("hardware3").reject_enable = true;
+    assert(runtime.reroute(session, {{{10, 2}}}, {}) == -EIO);
+    controls.controls.at("hardware3").reject_enable = false;
+    controls.controls.at("hardware3").enabled = 0;
+    assert(enabled({"link2", "path2"}));
+    assert(controls.controls.at("set3").bytes.size() == 32);
+    controls.controls.at("set3").bytes = custom;
+    assert(!runtime.reroute(session, {{{10, 2}}}, {}));
+    assert(enabled({"link2", "path2", "hardware3"}));
+    assert(controls.controls.at("set3").bytes == custom);
+    assert(streams[0].handle->state == running);
+
+    assert(!runtime.close(session));
+    assert(enabled({}));
+    assert(open_pcms.empty());
+
+    for (unsigned gate : {0, 2}) {
+        auto &value = input["hardware_gates"][gate];
+        auto &backend = value["backend"];
+
+        value["module"] = gate ? 0x4006 : 0x4003;
+        value["dai"] = 16;
+        value["direction"] = "playback";
+        backend["dai"] = 16;
+        backend["provider"] = "/dais";
+        backend["path"] = "/sound/speaker";
+        backend["name"] = "Speaker Playback";
+        for (const char *key : {"rate", "format", "channels", "data_format"})
+            backend["controls"][key] = std::string("backend ") + key;
+    }
+
+    ar_topology::Bindings shared(input);
+    controls.controls["backend rate"].enums = {"96000", "48000"};
+    controls.controls["backend channels"].enums = {"1", "2"};
+    controls.controls["backend format"].enums = {"S32_LE", "S16_LE"};
+    controls.controls["backend data_format"].enums = {
+        "Topology", "Compressed over PCM", "Fixed Point"};
+    ar_topology::Runtime managed(0, &controls, shared);
+    ar_topology::Media stereo{48000, 2, 1, "S16_LE"}, mono{48000, 1, 1, "S16_LE"};
+
+    session = 0;
+    streams.clear();
+    assert(!managed.acquire({{{10, 2}}}, {configuration(2)},
+                            {{{{10, 2}}, stereo}}, session, streams));
+    assert(controls.controls.at("backend channels").enabled == 1);
+    assert(controls.controls.at("hardware3").enabled);
+    assert(managed.reroute(session, {{{10, 2}}}, {{{{10, 2}}, mono}}) ==
+           -EBUSY);
+    assert(controls.controls.at("backend channels").enabled == 1);
+    assert(!managed.reroute(session, {{{10, 7}}}, {{{{10, 7}}, mono}}));
+    assert(controls.controls.at("backend channels").enabled == 0);
+    assert(!controls.controls.at("hardware3").enabled);
+    assert(controls.controls.at("hardware6").enabled);
+    assert(!managed.close(session));
+    assert(open_pcms.empty());
+}
+
 int main()
 {
     parameter_queries();
+    reroutes();
     vcpm_parameters();
     calibration();
     media_configuration();
