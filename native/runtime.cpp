@@ -30,13 +30,13 @@ int result(int status)
     return status == -1 ? -errno : status;
 }
 
-int open_compress(unsigned card, uint32_t device)
+int open_compress(unsigned card, uint32_t device, bool capture)
 {
     char path[32];
 
     snprintf(path, sizeof(path), "/dev/snd/comprC%uD%u", card, device);
 
-    int fd = ::open(path, O_WRONLY | O_CLOEXEC);
+    int fd = ::open(path, (capture ? O_RDONLY : O_WRONLY) | O_CLOEXEC);
 
     return fd < 0 ? -errno : fd;
 }
@@ -440,7 +440,7 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
             if (frontend.mode != FrontendMode::compress)
                 continue;
 
-            if (session.plan.frontends.size() != 1 || frontend.capture)
+            if (session.plan.frontends.size() != 1)
                 return -EOPNOTSUPP;
 
             session.compress = true;
@@ -568,7 +568,8 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
                 auto config = configs[i]->config;
 
                 if (active.compress) {
-                    stream.compress = open_compress(impl->card, configs[i]->id);
+                    stream.compress = open_compress(impl->card, configs[i]->id,
+                        configs[i]->flags & PCM_IN);
                     if (stream.compress < 0) {
                         status = stream.compress;
                         stream.compress = -1;

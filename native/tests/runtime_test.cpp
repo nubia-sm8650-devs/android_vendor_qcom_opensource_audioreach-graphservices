@@ -66,6 +66,7 @@ static pcm bad_pcm{UINT32_MAX};
 static int control_fd = -1;
 static int compress_fd = -1;
 static std::string compress_path;
+static int compress_access;
 static snd_compr_params compress_params{};
 static std::vector<unsigned> compress_commands;
 static mixer *compress_mixer;
@@ -81,7 +82,8 @@ extern "C" int __real_open(const char *, int, ...);
 extern "C" int __wrap_open(const char *path, int flags, ...)
 {
     if (!std::strncmp(path, "/dev/snd/comprC", 15)) {
-        assert(compress_fd < 0 && (flags & O_ACCMODE) == O_WRONLY);
+        assert(compress_fd < 0);
+        compress_access = flags & O_ACCMODE;
         compress_path = path;
         compress_fd = __real_open("/dev/null", flags);
         assert(compress_fd >= 0);
@@ -1146,6 +1148,7 @@ int main()
     assert(!offload_runtime.acquire({{{10, 2}}}, {offload_config}, offload, d));
     assert(d.size() == 1 && !d[0].handle && d[0].compress == compress_fd);
     assert(compress_path == "/dev/snd/comprC0D2" && open_pcms.empty());
+    assert(compress_access == O_WRONLY);
     assert(compress_commands.empty());
     assert(offload_runtime.start(offload) == -EBADFD);
     assert(!offload_runtime.prepare(offload, initialize, &offload_init));
@@ -1172,6 +1175,29 @@ int main()
     compress_fd = -1;
     d.clear();
     assert(runtime.compress_fd(first, 1, borrowed) == -ENOENT);
+
+    auto encoded = fixture();
+    encoded["frontends"][2]["mode"] = "compress";
+    ar_topology::Bindings record_bindings(encoded);
+    ar_topology::Runtime record_runtime(0, &controls, record_bindings);
+    ar_topology::SessionId record = 0;
+    auto record_config = configuration(4);
+    params.codec.id = SND_AUDIOCODEC_AAC;
+    record_config.compress = params;
+    record_config.flags = PCM_OUT;
+    assert(record_runtime.acquire({{{10, 4}}}, {record_config}, record, d) ==
+           -EINVAL);
+    record_config.flags = PCM_IN;
+    compress_commands.clear();
+    assert(!record_runtime.acquire({{{10, 4}}}, {record_config}, record, d));
+    assert(compress_path == "/dev/snd/comprC0D4" && compress_access == O_RDONLY);
+    assert(d.size() == 1 && d[0].compress == compress_fd && open_pcms.empty());
+    assert(!record_runtime.prepare(record));
+    assert(compress_params.codec.id == SND_AUDIOCODEC_AAC);
+    assert(!record_runtime.start(record));
+    assert(!record_runtime.close(record));
+    compress_fd = -1;
+    d.clear();
 
     auto hostless = fixture();
     hostless["frontends"][1]["mode"] = "hostless";
