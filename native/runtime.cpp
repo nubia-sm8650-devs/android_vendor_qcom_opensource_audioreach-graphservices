@@ -399,33 +399,45 @@ struct Runtime::Impl {
         return 0;
     }
 
+    int control(const std::string &name, Control *&output)
+    {
+        auto *handle = mixer_get_ctl_by_name(mixer, name.c_str());
+        if (!handle)
+            return -ENOENT;
+
+        if (mixer_ctl_get_type(handle) != MIXER_CTL_TYPE_BOOL ||
+            mixer_ctl_get_num_values(handle) != 1)
+            return -EINVAL;
+
+        auto [found, inserted] = controls.emplace(name, Control{handle});
+        (void)inserted;
+
+        if (!found->second.users) {
+            int value = mixer_ctl_get_value(handle, 0);
+            if (value < 0)
+                return result(value);
+
+            if (value)
+                return -EBUSY;
+        }
+
+        output = &found->second;
+
+        return 0;
+    }
+
     int resolve(const Plan &plan, std::vector<Control *> &output)
     {
         for (const auto *names : {&plan.references, &plan.paths,
                                    &plan.hardware}) {
             for (const auto &name : *names) {
-                auto *handle = mixer_get_ctl_by_name(mixer, name.c_str());
-                if (!handle)
-                    return -ENOENT;
+                Control *found = nullptr;
 
-                if (mixer_ctl_get_type(handle) != MIXER_CTL_TYPE_BOOL ||
-                    mixer_ctl_get_num_values(handle) != 1)
-                    return -EINVAL;
+                int status = control(name, found);
+                if (status)
+                    return status;
 
-                auto [found, inserted] = controls.emplace(name,
-                                                          Control{handle});
-                (void)inserted;
-
-                if (!found->second.users) {
-                    int value = mixer_ctl_get_value(handle, 0);
-                    if (value < 0)
-                        return result(value);
-
-                    if (value)
-                        return -EBUSY;
-                }
-
-                output.push_back(&found->second);
+                output.push_back(found);
             }
         }
 
