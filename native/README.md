@@ -61,6 +61,10 @@ directional reachability. Device fragments need not own a frontend alone.
 References do not add missing peers; their DAPM paths become eligible only
 when both peers belong to the composition. Failed selection leaves the
 output plan unchanged.
+A session whose selections contain no backend is the exception. The runtime
+enables the path of each of its references while another open session owns
+the graph at the other end, and disables it when that session closes or
+reroutes away. Such a session opens only while a peer gives it a route.
 `Bindings::frontends()` returns the frontends shared by every selection that
 contains a partial key set, for callers that know their device keys only
 later.
