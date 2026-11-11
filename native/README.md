@@ -92,11 +92,29 @@ session's controls and forgets the session even when a step fails, and returns
 the first error. The session ID is invalid afterwards.
 
 An admission that could expose untuned processing to an already prepared
-frontend returns `-EOPNOTSUPP` before route changes. This is not live
-switching support. PCM closure follows Tinyalsa's close interface, which
+frontend of another session returns `-EOPNOTSUPP` before route changes. PCM
+closure follows Tinyalsa's close interface, which
 does not report DSP teardown failures. Successful userspace cleanup does
 not establish DSP CLOSE acknowledgement or restart recovery. PAL/AGM still
 uses the stock backend.
+
+## Rerouting an open session
+
+`Runtime::reroute()` replaces the selections of an open session while its
+PCMs stay open and keep running. The new selections must resolve to the same
+frontends, otherwise it returns `-EXDEV`. It releases the controls only the old
+selections used, enables the references and paths the new ones add, sends
+default tuning to the graphs that are new to the session and calls the
+optional configuration callback with a writer scoped to the new selections,
+then enables the added hardware gates, which
+starts the new graphs of a prepared PCM. Pass managed backend media for
+sessions acquired with it. A backend port whose device graph stays in the
+session keeps its media, and a different format for it returns `-EBUSY`. A
+port that only changes its device graph takes the new media.
+
+A failed reroute leaves the session on the new selections with the completed
+part of the route enabled. Call it again with the same selections to finish,
+or close the session.
 
 ## Separate lifecycle phases
 
