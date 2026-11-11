@@ -160,6 +160,12 @@ do not register persistent data. VCPM records, instance 4, go to the graph
 of the session's frontend, and return `-EOPNOTSUPP` for sessions with
 frontends on several graphs. Instance 3 returns `-EOPNOTSUPP`.
 
+`Runtime::get_parameters()` queries one parameter record of a module the
+session owns. Pass the record header followed by room for the payload. It is
+filled in place. The query goes through the `get_control` named in the
+graph's bindings and returns `-EOPNOTSUPP` when the bindings name none, and
+`-EIO` when the module reports an error.
+
 ## Calibration keys
 
 `Runtime::acquire()` takes optional calibration keys for each requested
