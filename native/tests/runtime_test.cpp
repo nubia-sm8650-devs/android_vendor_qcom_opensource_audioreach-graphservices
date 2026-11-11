@@ -56,6 +56,7 @@ struct mixer {
 };
 
 static std::set<struct pcm *> open_pcms;
+static const struct mixer_ctl *open_requires;
 static bool initialization_seen;
 static bool prepared;
 static int rejected_pcm = -1;
@@ -210,6 +211,9 @@ extern "C" struct pcm *pcm_open(unsigned, unsigned device, unsigned flags,
     }
     if (int(device) == rejected_open)
         return &bad_pcm;
+
+    if (device == 8)
+        assert(!open_requires || open_requires->enabled);
 
     auto *handle = new pcm{device};
     handle->flags = flags;
@@ -1049,8 +1053,85 @@ static void reroutes()
     assert(open_pcms.empty());
 }
 
+static void peer_paths()
+{
+    auto input = fixture();
+    Json::Value selection, pair(Json::arrayValue), frontend, tuning;
+
+    pair.append("0xa");
+    pair.append("8");
+    selection["graph_keys"].append(pair);
+    selection["graphs"].append(8);
+    tuning["graph_id"] = 8;
+    tuning["subgraph"] = 0xb0000008u;
+    tuning["set_control"] = "set8";
+    tuning["modules"].append(0x4008);
+    selection["tuning"].append(tuning);
+    selection["references"].append("link8");
+    input["selections"].append(selection);
+    input["selections"][0]["references"].append("link9");
+    frontend["pcm_id"] = 8;
+    frontend["graph_id"] = 8;
+    frontend["direction"] = "capture";
+    frontend["mode"] = "pcm";
+    input["frontends"].append(frontend);
+
+    for (unsigned id : {8, 9}) {
+        Json::Value reference;
+
+        reference["name"] = "link" + std::to_string(id);
+        reference["control"] = false;
+        reference["source_graph"] = id == 8 ? 4 : 3;
+        reference["destination_graph"] = 8;
+        reference["path_control"] = "path" + std::to_string(id);
+        input["references"].append(reference);
+    }
+
+    ar_topology::Bindings bindings(input);
+    auto controls = make_mixer();
+    controls.controls["set8"].parameter = true;
+
+    for (const char *name : {"link8", "path8", "link9", "path9"})
+        controls.controls[name];
+
+    ar_topology::Runtime runtime(0, &controls, bindings);
+    ar_topology::SessionId record = 0, call = 0, playback = 0;
+    std::vector<ar_topology::Stream> streams, others, played;
+    auto recorded = configuration(4);
+    auto enabled = [&](const char *name) {
+        return controls.controls.at(name).enabled;
+    };
+
+    recorded.id = 8;
+    assert(!runtime.acquire({{{10, 8}}}, {recorded}, record, streams));
+    assert(enabled("link8") && !enabled("path8"));
+    assert(!runtime.acquire({{{10, 4}}}, {configuration(4)}, call, others));
+    assert(enabled("path8"));
+    assert(!runtime.acquire({{{10, 1}}}, {configuration(1)}, playback, played));
+    assert(enabled("link9") && !enabled("path9"));
+    assert(!runtime.close(playback));
+    assert(!runtime.close(call));
+    assert(enabled("link8") && !enabled("path8"));
+    assert(!runtime.close(record));
+    assert(!enabled("link8"));
+
+    record = call = 0;
+    streams.clear();
+    others.clear();
+    assert(!runtime.acquire({{{10, 4}}}, {configuration(4)}, call, others));
+    open_requires = &controls.controls.at("path8");
+    assert(!runtime.acquire({{{10, 8}}}, {recorded}, record, streams));
+    open_requires = nullptr;
+    assert(enabled("path8"));
+    assert(!runtime.close(record));
+    assert(!enabled("path8") && enabled("path4"));
+    assert(!runtime.close(call));
+    assert(open_pcms.empty());
+}
+
 int main()
 {
+    peer_paths();
     parameter_queries();
     reroutes();
     vcpm_parameters();

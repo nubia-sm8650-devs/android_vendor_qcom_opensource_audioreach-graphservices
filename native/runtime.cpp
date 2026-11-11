@@ -85,6 +85,7 @@ struct Runtime::Impl {
         Plan plan;
         std::vector<Stream> streams;
         std::vector<Control *> controls;
+        std::map<std::string, Control *> peers;
         size_t acquired = 0;
         bool initialized = false;
         bool managed_media = false;
@@ -173,7 +174,12 @@ struct Runtime::Impl {
             session.acquired--;
         }
 
+        int status = drop(session, {});
+        if (status && !first)
+            first = status;
+
         sessions.erase(found);
+        follow();
 
         return first;
     }
@@ -426,6 +432,100 @@ struct Runtime::Impl {
         return 0;
     }
 
+    std::set<std::string> reached(const Session &session) const
+    {
+        std::set<std::string> wanted;
+
+        if (!session.plan.hardware.empty())
+            return wanted;
+
+        for (const auto &name : session.plan.references) {
+            const auto &reference = bindings.references().at(name);
+            if (reference.path.empty() ||
+                session.plan.paths.count(reference.path))
+                continue;
+
+            uint32_t peer = session.plan.graphs.count(reference.source) ?
+                reference.destination : reference.source;
+
+            for (const auto &[id, other] : sessions) {
+                (void)id;
+
+                if (&other != &session && other.plan.graphs.count(peer))
+                    wanted.insert(reference.path);
+            }
+        }
+
+        return wanted;
+    }
+
+    int drop(Session &session, const std::set<std::string> &wanted)
+    {
+        int first = 0;
+
+        for (auto entry = session.peers.begin();
+             entry != session.peers.end();) {
+            if (wanted.count(entry->first)) {
+                entry++;
+                continue;
+            }
+
+            auto *control = entry->second;
+
+            if (control->users == 1) {
+                int status = result(mixer_ctl_set_value(control->handle, 0, 0));
+                if (status < 0 && !first)
+                    first = status;
+            }
+
+            control->users--;
+            entry = session.peers.erase(entry);
+        }
+
+        return first;
+    }
+
+    int reach(Session &session)
+    {
+        auto wanted = reached(session);
+        int first = drop(session, wanted);
+
+        for (const auto &name : wanted) {
+            if (session.peers.count(name))
+                continue;
+
+            Control *found = nullptr;
+
+            int status = control(name, found);
+            if (!status && found->users++ == 0) {
+                status = result(mixer_ctl_set_value(found->handle, 0, 1));
+                if (status < 0)
+                    found->users--;
+                else
+                    status = 0;
+            }
+
+            if (status) {
+                if (!first)
+                    first = status;
+
+                continue;
+            }
+
+            session.peers.emplace(name, found);
+        }
+
+        return first;
+    }
+
+    void follow()
+    {
+        for (auto &[id, session] : sessions) {
+            (void)id;
+            reach(session);
+        }
+    }
+
     int resolve(const Plan &plan, std::vector<Control *> &output)
     {
         for (const auto *names : {&plan.references, &plan.paths,
@@ -612,6 +712,9 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
             }
         }
 
+        if (status >= 0)
+            status = impl->reach(active);
+
         if (status >= 0) {
             status = 0;
 
@@ -657,6 +760,7 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         }
 
         streams = std::move(output);
+        impl->follow();
 
         return 0;
     } catch (const std::bad_alloc &) {
@@ -841,6 +945,8 @@ int Runtime::reroute(SessionId id, const std::vector<Keys> &requests,
             session.untuned.clear();
             status = enable(gates, next.controls.size());
         }
+
+        impl->follow();
 
         return status ? status : first;
     } catch (const std::bad_alloc &) {
