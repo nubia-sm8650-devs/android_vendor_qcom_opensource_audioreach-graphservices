@@ -50,6 +50,7 @@ public:
                  const std::vector<Keys> &calibration = {},
                  ConfigureParameters configure = nullptr,
                  void *context = nullptr);
+    int join(SessionId id, const Keys &selection, bool enable);
     int prepare(SessionId id, Configure configure = nullptr,
                  void *context = nullptr);
     int prepare_parameters(SessionId id, ConfigureParameters configure,

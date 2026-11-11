@@ -482,6 +482,23 @@ int Bindings::frontends(const Keys &partial,
     }
 }
 
+int Bindings::members(const Keys &keys, std::set<uint32_t> &graphs,
+                      std::set<std::string> &references) const
+{
+    try {
+        auto found = impl->selections.find(normalize(keys));
+        if (found == impl->selections.end())
+            return -ENOENT;
+
+        graphs = found->second.graphs;
+        references = found->second.references;
+
+        return 0;
+    } catch (const std::bad_alloc &) {
+        return -ENOMEM;
+    }
+}
+
 const std::map<std::string, Reference> &Bindings::references() const
 {
     return impl->references;

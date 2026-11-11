@@ -1129,8 +1129,85 @@ static void peer_paths()
     assert(open_pcms.empty());
 }
 
+static void joined_links()
+{
+    auto input = fixture();
+    Json::Value selection;
+
+    for (auto [key, value] : {std::pair{"0xa", "4"}, {"0xb", "1"}}) {
+        Json::Value pair(Json::arrayValue);
+
+        pair.append(key);
+        pair.append(value);
+        selection["graph_keys"].append(pair);
+    }
+
+    for (unsigned graph : {3, 4}) {
+        Json::Value tuning;
+
+        selection["graphs"].append(graph);
+        tuning["graph_id"] = graph;
+        tuning["subgraph"] = 0xb0000000u + graph;
+        tuning["set_control"] = "set" + std::to_string(graph);
+        tuning["modules"].append(0x4000 + graph);
+        selection["tuning"].append(tuning);
+    }
+
+    selection["references"].append("link10");
+    selection["references"].append("link11");
+    input["selections"].append(selection);
+
+    for (unsigned id : {10, 11}) {
+        Json::Value reference;
+
+        reference["name"] = "link" + std::to_string(id);
+        reference["control"] = false;
+        reference["source_graph"] = id == 10 ? 3 : 6;
+        reference["destination_graph"] = 4;
+        reference["path_control"] = "path" + std::to_string(id);
+        input["references"].append(reference);
+    }
+
+    ar_topology::Bindings bindings(input);
+    auto controls = make_mixer();
+
+    for (const char *name : {"link10", "path10", "link11", "path11"})
+        controls.controls[name];
+
+    ar_topology::Runtime runtime(0, &controls, bindings);
+    ar_topology::SessionId capture = 0;
+    std::vector<ar_topology::Stream> streams;
+    ar_topology::Keys echo{{11, 1}, {10, 4}};
+    auto enabled = [&](const char *name) {
+        return controls.controls.at(name).enabled;
+    };
+
+    assert(runtime.join(1, echo, true) == -ENOENT);
+    assert(!runtime.acquire({{{10, 4}}}, {configuration(4)}, capture, streams));
+    assert(runtime.join(capture, {{10, 9}}, true) == -ENOENT);
+    assert(runtime.join(capture, {{10, 1}}, true) == -ENOENT);
+    assert(!runtime.join(capture, echo, false));
+    assert(!runtime.join(capture, echo, true));
+    assert(enabled("link10") && !enabled("path10"));
+    assert(!enabled("link11") && !enabled("hardware3"));
+    assert(!runtime.join(capture, echo, true));
+    assert(!runtime.join(capture, echo, false));
+    assert(!enabled("link10") && enabled("link4"));
+
+    controls.controls.at("link10").reject_enable = true;
+    assert(runtime.join(capture, echo, true) == -EIO);
+    controls.controls.at("link10").reject_enable = false;
+    controls.controls.at("link10").enabled = 0;
+    assert(!runtime.join(capture, echo, true));
+    assert(enabled("link10"));
+    assert(!runtime.close(capture));
+    assert(!enabled("link10"));
+    assert(open_pcms.empty());
+}
+
 int main()
 {
+    joined_links();
     peer_paths();
     parameter_queries();
     reroutes();

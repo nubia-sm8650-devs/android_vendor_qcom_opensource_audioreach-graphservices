@@ -57,6 +57,8 @@ public:
     ~Bindings();
     int select(const std::vector<Keys> &requests, Plan &plan) const;
     int frontends(const Keys &partial, std::vector<Frontend> &frontends) const;
+    int members(const Keys &keys, std::set<uint32_t> &graphs,
+                std::set<std::string> &references) const;
     const std::map<std::string, Reference> &references() const;
     const std::map<uint32_t, Backend> &aifs() const;
 

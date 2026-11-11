@@ -86,6 +86,7 @@ struct Runtime::Impl {
         std::vector<Stream> streams;
         std::vector<Control *> controls;
         std::map<std::string, Control *> peers;
+        std::map<Keys, std::vector<Control *>> joined;
         size_t acquired = 0;
         bool initialized = false;
         bool managed_media = false;
@@ -177,6 +178,12 @@ struct Runtime::Impl {
         int status = drop(session, {});
         if (status && !first)
             first = status;
+
+        while (!session.joined.empty()) {
+            status = leave(session, session.joined.begin()->first);
+            if (status && !first)
+                first = status;
+        }
 
         sessions.erase(found);
         follow();
@@ -514,6 +521,29 @@ struct Runtime::Impl {
 
             session.peers.emplace(name, found);
         }
+
+        return first;
+    }
+
+    int leave(Session &session, const Keys &keys)
+    {
+        auto found = session.joined.find(keys);
+        if (found == session.joined.end())
+            return 0;
+
+        int first = 0;
+
+        for (auto *control : found->second) {
+            if (control->users == 1) {
+                int status = result(mixer_ctl_set_value(control->handle, 0, 0));
+                if (status < 0 && !first)
+                    first = status;
+            }
+
+            control->users--;
+        }
+
+        session.joined.erase(found);
 
         return first;
     }
@@ -949,6 +979,75 @@ int Runtime::reroute(SessionId id, const std::vector<Keys> &requests,
         impl->follow();
 
         return status ? status : first;
+    } catch (const std::bad_alloc &) {
+        return -ENOMEM;
+    }
+}
+
+int Runtime::join(SessionId id, const Keys &selection, bool enable)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    auto found = impl->sessions.find(id);
+    if (found == impl->sessions.end())
+        return -ENOENT;
+
+    try {
+        auto &session = found->second;
+        auto keys = selection;
+
+        std::sort(keys.begin(), keys.end());
+
+        if (!enable)
+            return impl->leave(session, keys);
+
+        if (session.joined.count(keys))
+            return 0;
+
+        std::set<uint32_t> graphs;
+        std::set<std::string> references;
+
+        int status = impl->bindings.members(keys, graphs, references);
+        if (status)
+            return status;
+
+        std::vector<Impl::Control *> links;
+
+        for (const auto &name : references) {
+            const auto &reference = impl->bindings.references().at(name);
+            if (!graphs.count(reference.source) ||
+                !graphs.count(reference.destination) ||
+                session.plan.graphs.count(reference.source) ==
+                session.plan.graphs.count(reference.destination))
+                continue;
+
+            Impl::Control *control = nullptr;
+
+            status = impl->control(name, control);
+            if (status)
+                return status;
+
+            links.push_back(control);
+        }
+
+        if (links.empty())
+            return -ENOENT;
+
+        auto &held = session.joined[keys];
+
+        for (auto *control : links) {
+            held.push_back(control);
+
+            if (control->users++ == 0) {
+                status = result(mixer_ctl_set_value(control->handle, 0, 1));
+                if (status < 0) {
+                    impl->leave(session, keys);
+
+                    return status;
+                }
+            }
+        }
+
+        return 0;
     } catch (const std::bad_alloc &) {
         return -ENOMEM;
     }
