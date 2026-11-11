@@ -209,6 +209,11 @@ root needs a packet write endpoint and the placeholder decoder, a capture root
 a packet read endpoint and the placeholder encoder, and the frontend becomes a
 compressed SectionPCM.
 
+Add `"backend": "WIDGET"` to a `pcm` or `compress` binding whose graph ends
+in another stream's graph and reaches no hardware graph of its own, such as
+music played into a voice call. The frontend's endpoint module is routed to
+that backend DAI widget, so that DPCM finds a backend for the frontend.
+
 For an explicit hostless application, use `"mode": "hostless"`. The
 frontend connects to the root's only module, or else to its one module
 without intrinsic input for playback or without intrinsic output for
