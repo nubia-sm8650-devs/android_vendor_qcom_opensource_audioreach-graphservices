@@ -702,6 +702,18 @@ int Runtime::set_parameters(SessionId id, const void *data, size_t size,
     return writer.set(data, size, applied);
 }
 
+int Runtime::get_parameters(SessionId id, void *data, size_t size)
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+    auto found = impl->sessions.find(id);
+    if (found == impl->sessions.end())
+        return -ENOENT;
+
+    Parameters reader(impl->mixer, found->second.plan);
+
+    return reader.get(data, size);
+}
+
 int Runtime::set_tagged_parameters(SessionId id, const Keys &gkv, uint32_t tag,
                                    const Keys &tkv)
 {

@@ -14,6 +14,7 @@ public:
     Parameters(const Parameters &) = delete;
     Parameters &operator=(const Parameters &) = delete;
     int set(const void *data, size_t size, size_t *applied = nullptr) const;
+    int get(void *data, size_t size) const;
     int resolve_tag(const Keys &gkv, uint32_t tag, const Keys &tkv,
                      std::vector<uint8_t> &data) const;
 

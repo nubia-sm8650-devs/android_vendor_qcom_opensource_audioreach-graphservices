@@ -49,6 +49,7 @@ public:
                  void *context = nullptr);
     int prepare_parameters(SessionId id, ConfigureParameters configure,
                             void *context = nullptr);
+    int get_parameters(SessionId id, void *data, size_t size);
     int set_parameters(SessionId id, const void *data, size_t size,
                         size_t *applied = nullptr);
     int set_tagged_parameters(SessionId id, const Keys &gkv, uint32_t tag,

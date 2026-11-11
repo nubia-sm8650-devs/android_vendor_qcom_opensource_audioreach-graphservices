@@ -170,6 +170,85 @@ int Parameters::set(const void *data, size_t size, size_t *applied) const
     }
 }
 
+int Parameters::get(void *data, size_t size) const
+{
+    uint32_t header[4];
+
+    if (!data || size < sizeof(header))
+        return -EINVAL;
+
+    std::memcpy(header, data, sizeof(header));
+
+    if (header[3] || header[2] > size - sizeof(header))
+        return -EINVAL;
+
+    uint32_t graph;
+
+    if (header[0] == vcpm_instance) {
+        int status = frontend_graph(plan, graph);
+        if (status)
+            return status;
+    } else {
+        auto owner = plan.modules.find(header[0]);
+        if (owner == plan.modules.end())
+            return -ENOENT;
+
+        graph = owner->second;
+    }
+
+    const auto &name = plan.graphs.at(graph).get_control;
+    if (name.empty())
+        return -EOPNOTSUPP;
+
+    auto *control = mixer_get_ctl_by_name(mixer, name.c_str());
+    if (!control)
+        return -ENOENT;
+
+    if (mixer_ctl_get_type(control) != MIXER_CTL_TYPE_BYTE ||
+        !mixer_ctl_is_access_tlv_rw(control))
+        return -EINVAL;
+
+    try {
+        uint32_t length = sizeof(header) + ((header[2] + 7) & ~uint32_t(7));
+        uint32_t tlv[] = {SND_SOC_AR_TLV_GET_PARAMS, length};
+        std::vector<uint8_t> bytes(sizeof(tlv) + length);
+
+        std::memcpy(bytes.data(), tlv, sizeof(tlv));
+        std::memcpy(bytes.data() + sizeof(tlv), data,
+                    sizeof(header) + header[2]);
+
+        int status = mixer_ctl_set_array(control, bytes.data(), bytes.size());
+        if (status)
+            return status == -1 ? -errno : status;
+
+        status = mixer_ctl_get_array(control, bytes.data(), bytes.size());
+        if (status)
+            return status == -1 ? -errno : status;
+
+        uint32_t reply[4];
+
+        std::memcpy(tlv, bytes.data(), sizeof(tlv));
+        if (tlv[0] != SND_SOC_AR_TLV_GET_PARAMS || tlv[1] < sizeof(reply) ||
+            tlv[1] > length)
+            return -EPROTO;
+
+        std::memcpy(reply, bytes.data() + sizeof(tlv), sizeof(reply));
+        if (reply[0] != header[0] || reply[1] != header[1] ||
+            reply[2] > tlv[1] - sizeof(reply))
+            return -EPROTO;
+
+        if (reply[3])
+            return -EIO;
+
+        std::memcpy(data, bytes.data() + sizeof(tlv),
+                    std::min(size, sizeof(reply) + reply[2]));
+
+        return 0;
+    } catch (const std::bad_alloc &) {
+        return -ENOMEM;
+    }
+}
+
 int Parameters::resolve_tag(const Keys &gkv, uint32_t tag, const Keys &tkv,
                             std::vector<uint8_t> &data) const
 {

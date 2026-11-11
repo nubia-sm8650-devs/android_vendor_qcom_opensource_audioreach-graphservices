@@ -45,6 +45,8 @@ struct mixer_ctl {
     bool reject_disable = false;
     bool reject_parameters = false;
     Bytes bytes;
+    Bytes reply{};
+    uint32_t reply_error = 0;
     std::vector<std::string> enums{};
     std::vector<long> integers{};
 };
@@ -371,6 +373,31 @@ extern "C" unsigned mixer_ctl_get_num_values(struct mixer_ctl *control)
 extern "C" int mixer_ctl_get_array(struct mixer_ctl *control, void *array,
                                     size_t count)
 {
+    if (control->parameter) {
+        uint32_t tlv[2], header[4];
+
+        assert(count == control->bytes.size() &&
+               count >= sizeof(tlv) + sizeof(header));
+        std::memcpy(tlv, control->bytes.data(), sizeof(tlv));
+        assert(tlv[0] == SND_SOC_AR_TLV_GET_PARAMS &&
+               tlv[1] == count - sizeof(tlv) && !(tlv[1] % 8));
+        std::memcpy(header, control->bytes.data() + sizeof(tlv),
+                    sizeof(header));
+        assert(header[2] <= tlv[1] - sizeof(header) && !header[3]);
+        header[2] = std::min<size_t>(header[2], control->reply.size());
+        header[3] = control->reply_error;
+        tlv[1] = sizeof(header) + header[2];
+
+        auto *bytes = static_cast<uint8_t *>(array);
+
+        std::memcpy(bytes, tlv, sizeof(tlv));
+        std::memcpy(bytes + sizeof(tlv), header, sizeof(header));
+        std::memcpy(bytes + sizeof(tlv) + sizeof(header),
+                    control->reply.data(), header[2]);
+
+        return 0;
+    }
+
     assert(count == control->integers.size());
     std::memcpy(array, control->integers.data(), count * sizeof(long));
     return 0;
@@ -794,8 +821,61 @@ static void vcpm_parameters()
     assert(!runtime.close(pair));
 }
 
+static void parameter_queries()
+{
+    auto input = fixture();
+
+    for (auto &selection : input["selections"]) {
+        for (auto &tuning : selection["tuning"]) {
+            if (tuning["graph_id"].asUInt() == 1)
+                tuning["get_control"] = "get1";
+        }
+    }
+
+    ar_topology::Bindings bindings(input);
+    auto controls = make_mixer();
+    auto &get = controls.controls["get1"];
+    ar_topology::Runtime runtime(0, &controls, bindings);
+    ar_topology::SessionId session = 0;
+    std::vector<ar_topology::Stream> streams;
+
+    get.parameter = true;
+    get.reply = {1, 2, 3, 4, 5, 6};
+    assert(!runtime.acquire({{{10, 1}}}, {configuration(1)}, session, streams));
+
+    uint32_t query[] = {0x4001, 0x0800113d, 6, 0, 0xaaaaaaaa, 0xbbbbbbbb};
+
+    assert(!runtime.get_parameters(session, query, sizeof(query)));
+    assert(query[0] == 0x4001 && query[1] == 0x0800113d && query[2] == 6);
+    assert(query[4] == 0x04030201 && query[5] == 0xbbbb0605);
+
+    uint32_t tlv[2], sent[4];
+
+    assert(get.bytes.size() == sizeof(tlv) + sizeof(query));
+    std::memcpy(tlv, get.bytes.data(), sizeof(tlv));
+    std::memcpy(sent, get.bytes.data() + sizeof(tlv), sizeof(sent));
+    assert(tlv[0] == SND_SOC_AR_TLV_GET_PARAMS && tlv[1] == sizeof(query));
+    assert(sent[0] == 0x4001 && sent[2] == 6);
+
+    get.reply_error = 1;
+    assert(runtime.get_parameters(session, query, sizeof(query)) == -EIO);
+    get.reply_error = 0;
+
+    query[0] = 0x4003;
+    assert(runtime.get_parameters(session, query, sizeof(query)) ==
+           -EOPNOTSUPP);
+    query[0] = 0x4002;
+    assert(runtime.get_parameters(session, query, sizeof(query)) == -ENOENT);
+    query[0] = 0x4001;
+    query[2] = 12;
+    assert(runtime.get_parameters(session, query, sizeof(query)) == -EINVAL);
+    assert(runtime.get_parameters(session, query, 8) == -EINVAL);
+    assert(!runtime.close(session));
+}
+
 int main()
 {
+    parameter_queries();
     vcpm_parameters();
     calibration();
     media_configuration();
