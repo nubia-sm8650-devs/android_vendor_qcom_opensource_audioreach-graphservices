@@ -70,11 +70,12 @@ configurations for every selected frontend. Start with a zero session ID
 and an empty stream vector. The runtime reserves frontend roots, shares
 controls, opens all PCMs, applies defaults only to newly acquired graphs,
 then prepares the PCMs. A compressed frontend must be the plan's only
-frontend, play back, and carry its `snd_compr_params` in `Pcm::compress`.
-The runtime opens its compress device, applies the defaults while the DSP
-graph is open, and sets the parameters when preparing, which starts the
-graph. Starting does nothing further. The client writes, triggers and sets
-gapless metadata on the descriptor `Runtime::compress_fd()` lends, and must
+frontend and carry its `snd_compr_params` in `Pcm::compress`.
+The runtime opens its compress device for writing, or for reading when the
+frontend captures, applies the defaults while the DSP graph is open, and sets
+the parameters when preparing, which starts a playback graph. Starting does
+nothing further. The client reads or writes, triggers and sets gapless
+metadata on the descriptor `Runtime::compress_fd()` lends, and must
 not use it after closing the session. A duplex PCM needs a playback and a capture configuration with
 its ID and opens a stream for each, and calls that name only that PCM return
 `-EOPNOTSUPP`. The optional configuration callback sees all open
