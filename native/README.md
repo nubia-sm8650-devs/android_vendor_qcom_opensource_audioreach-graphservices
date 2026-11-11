@@ -65,6 +65,12 @@ A session whose selections contain no backend is the exception. The runtime
 enables the path of each of its references while another open session owns
 the graph at the other end, and disables it when that session closes or
 reroutes away. Such a session opens only while a peer gives it a route.
+
+`Runtime::join()` enables the reference controls of another selection that
+connect an open session's graphs to that selection's other graphs, and
+disables them again. It is how a capture session takes an echo reference
+from a playback device graph that another session owns. The paths of those
+references stay off, and closing the session releases the links.
 `Bindings::frontends()` returns the frontends shared by every selection that
 contains a partial key set, for callers that know their device keys only
 later.
