@@ -18,6 +18,7 @@ using Keys = std::vector<std::pair<uint32_t, uint32_t>>;
 struct Graph {
     uint32_t subgraph;
     std::string set_control;
+    std::string get_control = {};
 };
 
 int read_defaults(uint32_t subgraph, std::vector<uint8_t> &data);

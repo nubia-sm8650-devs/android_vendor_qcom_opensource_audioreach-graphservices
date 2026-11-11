@@ -190,6 +190,33 @@ static void partial_frontends()
     assert(frontends.size() == 1 && frontends[0].pcm_id == 5);
 }
 
+static void get_controls()
+{
+    auto input = fixture();
+    ar_topology::Plan plan;
+
+    input["selections"][0]["tuning"][0]["get_control"] = "get1";
+    ar_topology::Bindings bindings(input);
+    assert(!bindings.select({{{10, 1}}}, plan));
+    assert(plan.graphs.at(1).get_control == "get1");
+    assert(!bindings.select({{{10, 1}}, {{10, 2}}}, plan));
+    assert(plan.graphs.at(2).get_control.empty());
+
+    for (const char *name : {"set1", "set2"}) {
+        bool rejected = false;
+
+        input["selections"][0]["tuning"][0]["get_control"] = name;
+
+        try {
+            ar_topology::Bindings invalid(input);
+        } catch (const std::invalid_argument &) {
+            rejected = true;
+        }
+
+        assert(rejected);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2) {
@@ -198,6 +225,7 @@ int main(int argc, char **argv)
     }
 
     partial_frontends();
+    get_controls();
 
     auto input = fixture();
     ar_topology::Bindings bindings(input);

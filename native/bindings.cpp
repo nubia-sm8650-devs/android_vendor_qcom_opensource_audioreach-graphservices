@@ -118,6 +118,9 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
             Graph binding{number(graph["subgraph"]),
                            text(graph["set_control"])};
 
+            if (graph.isMember("get_control"))
+                binding.get_control = text(graph["get_control"]);
+
             if (!graph["modules"].isArray())
                 throw std::invalid_argument("Missing module ownership");
 
@@ -140,7 +143,8 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
 
             auto [prior, inserted] = impl->graphs.emplace(id, binding);
             if (!inserted && (prior->second.subgraph != binding.subgraph ||
-                              prior->second.set_control != binding.set_control))
+                              prior->second.set_control != binding.set_control ||
+                              prior->second.get_control != binding.get_control))
                 throw std::invalid_argument("Conflicting graph binding");
 
             auto [sg, new_sg] = subgraphs.emplace(binding.subgraph, id);
@@ -148,6 +152,12 @@ Bindings::Bindings(const Json::Value &input) : impl(new Impl)
             if ((!new_sg && sg->second != id) ||
                 (!new_ctl && ctl->second != id))
                 throw std::invalid_argument("Repeated graph identity");
+
+            if (!binding.get_control.empty()) {
+                auto [get, new_get] = controls.emplace(binding.get_control, id);
+                if (!new_get && (get->second != id || inserted))
+                    throw std::invalid_argument("Repeated graph identity");
+            }
         }
 
         if (tuned != value.graphs)
