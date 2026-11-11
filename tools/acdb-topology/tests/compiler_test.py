@@ -678,6 +678,8 @@ class CompilerTest(unittest.TestCase):
                                      {int(sg, 0) for sg in original["subgraph_ids"]})
                     self.assertTrue(all(g["set_control"] ==
                         f'ar_g{g["graph_id"]}_set' for g in selection["tuning"]))
+                    self.assertTrue(all(g["get_control"] ==
+                        f'ar_g{g["graph_id"]}_get' for g in selection["tuning"]))
                     for graph in selection["tuning"]:
                         self.assertEqual(graph["modules"],
                             [0x4001 if graph["subgraph"] == 0xB0000001 else

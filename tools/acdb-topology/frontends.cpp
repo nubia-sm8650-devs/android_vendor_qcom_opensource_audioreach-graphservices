@@ -138,6 +138,7 @@ void bind_frontends(Compilation &compiled, const Json::Value &input)
         calibration["subgraph"] = id;
         calibration["graph_id"] = root.graph;
         calibration["set_control"] = subgraph["parameter_controls"]["set"];
+        calibration["get_control"] = subgraph["parameter_controls"]["get"];
         Source source = read_source(subgraph["source"]);
 
         for (const auto &parameter : source.open) {
