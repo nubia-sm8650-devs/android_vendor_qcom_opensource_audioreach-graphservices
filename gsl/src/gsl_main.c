@@ -1927,6 +1927,7 @@ int32_t gsl_ioctl(gsl_handle_t graph_handle,
 		break;
 
 	case GSL_CMD_CONFIGURE_PCM_MEDIA:
+	case GSL_CMD_CONFIGURE_COMPRESS_MEDIA:
 		rc = AR_EUNSUPPORTED;
 		break;
 

@@ -198,6 +198,13 @@ enum gsl_cmd_id {
 	 * through a sound card PCM, which needs the format to open it.
 	 */
 	GSL_CMD_CONFIGURE_PCM_MEDIA = 0x16,
+	/**
+	 * Payload: struct snd_compr_params of the Linux compress offload API
+	 * Describes the compressed data that the client reads or writes. Sent
+	 * before GSL_CMD_PREPARE by a client of an implementation that moves
+	 * data through a sound card compress device.
+	 */
+	GSL_CMD_CONFIGURE_COMPRESS_MEDIA = 0x17,
 	GSL_CMD_MAX
 };
 
