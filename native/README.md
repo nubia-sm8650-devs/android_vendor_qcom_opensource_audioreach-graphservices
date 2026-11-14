@@ -49,6 +49,10 @@ Construct `ar_topology::Bindings` from the compiler's compact JSON output,
 then construct one `ar_topology::Runtime` per card with its mixer and
 bindings. Keep both objects alive for the runtime's lifetime and use the
 runtime as the sole writer of its reference, path and hardware controls.
+Call `Runtime::reset()` once after constructing the runtime and before the
+first session. It switches off every hardware gate, path and reference
+control of the bindings, since the kernel keeps their values after the
+process that set them dies.
 Compact files must include reference ownership metadata and module instance
 IDs in every `tuning` entry's `modules` array. Regenerate older files that
 lack this metadata; ownership is not inferred from control names.
