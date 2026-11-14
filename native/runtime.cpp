@@ -984,6 +984,60 @@ int Runtime::reroute(SessionId id, const std::vector<Keys> &requests,
     }
 }
 
+int Runtime::reset()
+{
+    std::lock_guard<std::mutex> lock(impl->mutex);
+
+    if (!impl->sessions.empty())
+        return -EBUSY;
+
+    try {
+        std::vector<std::string> names;
+
+        for (const auto &[name, graph] : impl->bindings.hardware()) {
+            (void)graph;
+            names.push_back(name);
+        }
+
+        for (const auto &[name, reference] : impl->bindings.references()) {
+            (void)name;
+
+            if (!reference.path.empty())
+                names.push_back(reference.path);
+        }
+
+        for (const auto &[name, reference] : impl->bindings.references()) {
+            (void)reference;
+            names.push_back(name);
+        }
+
+        for (const auto &name : names) {
+            auto *handle = mixer_get_ctl_by_name(impl->mixer, name.c_str());
+            if (!handle)
+                return -ENOENT;
+
+            if (mixer_ctl_get_type(handle) != MIXER_CTL_TYPE_BOOL ||
+                mixer_ctl_get_num_values(handle) != 1)
+                return -EINVAL;
+
+            int value = mixer_ctl_get_value(handle, 0);
+            if (value < 0)
+                return result(value);
+
+            if (!value)
+                continue;
+
+            int status = result(mixer_ctl_set_value(handle, 0, 0));
+            if (status < 0)
+                return status;
+        }
+
+        return 0;
+    } catch (const std::bad_alloc &) {
+        return -ENOMEM;
+    }
+}
+
 int Runtime::join(SessionId id, const Keys &selection, bool enable)
 {
     std::lock_guard<std::mutex> lock(impl->mutex);

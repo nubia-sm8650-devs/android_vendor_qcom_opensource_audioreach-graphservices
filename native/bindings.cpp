@@ -504,6 +504,11 @@ const std::map<std::string, Reference> &Bindings::references() const
     return impl->references;
 }
 
+const std::map<std::string, uint32_t> &Bindings::hardware() const
+{
+    return impl->hardware;
+}
+
 const std::map<uint32_t, Backend> &Bindings::aifs() const
 {
     return impl->aifs;

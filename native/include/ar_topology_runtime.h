@@ -38,6 +38,7 @@ public:
     Runtime(unsigned card, struct mixer *mixer, const Bindings &bindings);
     ~Runtime();
     unsigned card_id() const;
+    int reset();
     int acquire(const std::vector<Keys> &requests, const std::vector<Pcm> &pcms,
                  SessionId &id, std::vector<Stream> &streams,
                  const std::vector<Keys> &calibration = {});

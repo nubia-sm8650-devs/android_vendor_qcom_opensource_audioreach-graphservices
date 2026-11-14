@@ -1205,8 +1205,46 @@ static void joined_links()
     assert(open_pcms.empty());
 }
 
+static void stale_controls()
+{
+    ar_topology::Bindings bindings(fixture());
+    auto controls = make_mixer();
+    ar_topology::Runtime runtime(0, &controls, bindings);
+    ar_topology::SessionId session = 0;
+    std::vector<ar_topology::Stream> streams;
+
+    for (const char *name : {"link1", "path1", "hardware3", "link6"})
+        controls.controls.at(name).enabled = 1;
+
+    assert(runtime.acquire({{{10, 1}}}, {configuration(1)}, session, streams)
+           == -EBUSY);
+    assert(!session && streams.empty() && open_pcms.empty());
+
+    controls.controls.at("hardware3").reject_disable = true;
+    assert(runtime.reset() == -EIO);
+    controls.controls.at("hardware3").reject_disable = false;
+    controls.controls.at("hardware3").enabled = 1;
+    assert(controls.controls.at("link1").enabled);
+    assert(!runtime.reset());
+
+    for (const auto &[name, control] : controls.controls)
+        assert(!control.enabled);
+
+    assert(!runtime.acquire({{{10, 1}}}, {configuration(1)}, session, streams));
+    assert(runtime.reset() == -EBUSY);
+    assert(controls.controls.at("hardware3").enabled);
+    assert(!runtime.close(session));
+
+    auto link = controls.controls.at("link2");
+    controls.controls.erase("link2");
+    assert(runtime.reset() == -ENOENT);
+    controls.controls["link2"] = link;
+    assert(open_pcms.empty());
+}
+
 int main()
 {
+    stale_controls();
     joined_links();
     peer_paths();
     parameter_queries();

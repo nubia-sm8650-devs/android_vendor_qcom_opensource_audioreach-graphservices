@@ -60,6 +60,7 @@ public:
     int members(const Keys &keys, std::set<uint32_t> &graphs,
                 std::set<std::string> &references) const;
     const std::map<std::string, Reference> &references() const;
+    const std::map<std::string, uint32_t> &hardware() const;
     const std::map<uint32_t, Backend> &aifs() const;
 
 private:
