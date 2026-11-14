@@ -82,6 +82,9 @@ static unsigned backend_rate;
 static std::string backend_data_format;
 
 static int card_watch_end = -1;
+static std::vector<std::pair<int, int>> notification_ends;
+static int registered_events;
+static int queued_events = -1;
 
 extern "C" int pcm_start(struct pcm *handle);
 
@@ -105,6 +108,14 @@ extern "C" int __wrap_open(const char *path, int flags, ...)
 
         assert(card_watch_end < 0 && !pipe2(ends, O_CLOEXEC));
         card_watch_end = ends[1];
+        return ends[0];
+    }
+
+    if (flags & O_NONBLOCK) {
+        int ends[2];
+
+        assert(!pipe2(ends, O_CLOEXEC | O_NONBLOCK));
+        notification_ends.push_back({ends[0], ends[1]});
         return ends[0];
     }
 
@@ -135,7 +146,12 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
         return -1;
     }
 
-    assert(fd == control_fd);
+    bool notification = false;
+
+    for (const auto &ends : notification_ends)
+        notification |= ends.first == fd;
+
+    assert(fd == control_fd || notification);
 
     if (command == SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS) {
         assert(*static_cast<int *>(data) == 1);
@@ -163,8 +179,18 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
     auto &tlv = *static_cast<snd_ctl_tlv *>(data);
     if (command == SNDRV_CTL_IOCTL_TLV_WRITE) {
         assert(tlv.tlv[0] == APM_CMD_REGISTER_MODULE_EVENTS);
+        registered_events++;
     } else {
         assert(command == SNDRV_CTL_IOCTL_TLV_READ);
+
+        if (!queued_events) {
+            errno = EAGAIN;
+            return -1;
+        }
+
+        if (queued_events > 0)
+            queued_events--;
+
         uint32_t event[] = {0x4000 + tlv.numid, 0x08001000, 0};
         tlv.tlv[0] = APM_EVENT_MODULE_TO_CLIENT;
         tlv.tlv[1] = sizeof(event);

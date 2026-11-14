@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "gsl_native.h"
 
+#include <ar_topology_pcm_controls.h>
 #include <ar_topology_runtime.h>
 
 #include <algorithm>
@@ -13,12 +14,17 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <thread>
 #include <vector>
+#include <apm_api.h>
 #include <ar_osal_error.h>
 #include <gsl_intf.h>
+#include <poll.h>
 #include <sound/asound.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <tinyalsa/asoundlib.h>
+#include <unistd.h>
 
 namespace
 {
@@ -46,6 +52,13 @@ struct Graph {
     std::vector<Keys> calibration;
     std::deque<Operation> pending;
     bool initialized = false;
+    gsl_cb_func_ptr callback = nullptr;
+    void *client = nullptr;
+    std::vector<std::vector<uint8_t>> registrations;
+    int notifications = -1;
+    int wake = -1;
+    size_t next_pcm = 0;
+    std::thread reader;
     std::optional<gsl_cmd_configure_pcm_media> media;
     Buffer read;
     Buffer write;
@@ -276,6 +289,160 @@ int initialize(void *context, ar_topology::Parameters &writer,
     return 0;
 }
 
+void deliver(std::shared_ptr<Graph> graph, ar_topology::Runtime *runtime)
+{
+    pollfd fds[2] = {{graph->notifications, POLLIN, 0},
+                     {graph->wake, POLLIN, 0}};
+
+    for (;;) {
+        if (::poll(fds, 2, -1) < 0) {
+            if (errno == EINTR)
+                continue;
+
+            return;
+        }
+
+        if (fds[1].revents)
+            return;
+
+        std::vector<uint8_t> data;
+        gsl_cb_func_ptr callback;
+        void *client;
+
+        {
+            std::lock_guard<std::mutex> lock(graph->mutex);
+
+            if (ar_topology::consume_pcm_notifications(graph->notifications))
+                return;
+
+            int status = -EAGAIN;
+
+            for (size_t i = 0; i < graph->configs.size(); i++) {
+                uint32_t pcm = graph->configs[graph->next_pcm].id;
+
+                graph->next_pcm = (graph->next_pcm + 1) % graph->configs.size();
+
+                status = runtime->read_event(graph->id, pcm, data);
+                if (status != -EAGAIN)
+                    break;
+            }
+
+            if (status)
+                continue;
+
+            callback = graph->callback;
+            client = graph->client;
+        }
+
+        uint32_t header[3];
+
+        if (!callback || data.size() < sizeof(header))
+            continue;
+
+        std::memcpy(header, data.data(), sizeof(header));
+        if (header[2] != data.size() - sizeof(header))
+            continue;
+
+        gsl_event_cb_params event{header[0], header[1], header[2],
+                                  data.data() + sizeof(header)};
+
+        callback(&event, client);
+    }
+}
+
+void silence(Graph &graph)
+{
+    if (graph.reader.joinable()) {
+        uint64_t count = 1;
+        ssize_t status;
+
+        do {
+            status = ::write(graph.wake, &count, sizeof(count));
+        } while (status < 0 && errno == EINTR);
+
+        graph.reader.join();
+    }
+
+    if (graph.notifications >= 0)
+        ::close(graph.notifications);
+
+    if (graph.wake >= 0)
+        ::close(graph.wake);
+
+    graph.notifications = graph.wake = -1;
+}
+
+int subscribe(const Use &use)
+{
+    auto &graph = *use.graph;
+
+    if (graph.reader.joinable())
+        return 0;
+
+    if (graph.notifications < 0) {
+        int status = use.runtime->subscribe_events(graph.id,
+            graph.configs[0].id, graph.notifications);
+        if (status)
+            return status;
+    }
+
+    if (graph.wake < 0) {
+        graph.wake = eventfd(0, EFD_CLOEXEC);
+        if (graph.wake < 0)
+            return -errno;
+    }
+
+    graph.reader = std::thread(deliver, use.graph, use.runtime);
+
+    return 0;
+}
+
+int enroll(const Use &use, const std::vector<uint8_t> &registration)
+{
+    int status = subscribe(use);
+    if (status)
+        return status;
+
+    return use.runtime->register_events(use.graph->id, registration.data(),
+                                        registration.size());
+}
+
+int registration(const Use &use, const void *payload, size_t size)
+{
+    auto &graph = *use.graph;
+
+    if (!payload || size < sizeof(gsl_cmd_register_custom_event))
+        return -EINVAL;
+
+    auto &request =
+        *static_cast<const gsl_cmd_register_custom_event *>(payload);
+
+    if (request.is_register > 1 ||
+        size - sizeof(request) != request.event_config_payload_size)
+        return -EINVAL;
+
+    apm_module_register_events_t header{};
+
+    header.module_instance_id = request.module_instance_id;
+    header.event_id = request.event_id;
+    header.is_register = request.is_register;
+    header.event_config_payload_size = request.event_config_payload_size;
+
+    std::vector<uint8_t> data(sizeof(header) +
+                              request.event_config_payload_size);
+
+    std::memcpy(data.data(), &header, sizeof(header));
+    std::memcpy(data.data() + sizeof(header), request.event_config_payload,
+                request.event_config_payload_size);
+
+    if (graph.acquired)
+        return enroll(use, data);
+
+    graph.registrations.push_back(std::move(data));
+
+    return 0;
+}
+
 int buffer(Buffer &value, const void *payload, size_t size)
 {
     if (!payload || size != sizeof(gsl_cmd_configure_read_write_params))
@@ -317,14 +484,24 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
         return buffer(id == GSL_CMD_CONFIGURE_READ_PARAMS ? graph.read :
                                                              graph.write,
                       payload, size);
-    case GSL_CMD_PREPARE:
+    case GSL_CMD_PREPARE: {
         if (!graph.acquired) {
             int status = acquire(use, graph);
             if (status)
                 return status;
         }
 
-        return runtime.prepare_parameters(graph.id, initialize, &graph);
+        int status = runtime.prepare_parameters(graph.id, initialize, &graph);
+
+        while (!status && !graph.registrations.empty()) {
+            status = enroll(use, graph.registrations.front());
+            graph.registrations.erase(graph.registrations.begin());
+        }
+
+        return status;
+    }
+    case GSL_CMD_REGISTER_CUSTOM_EVENT:
+        return registration(use, payload, size);
     case GSL_CMD_START:
         return graph.acquired ? runtime.start(graph.id) : -EPERM;
     case GSL_CMD_STOP:
@@ -475,6 +652,8 @@ void stop()
     for (auto &[handle, graph] : library->graphs) {
         (void)handle;
 
+        silence(*graph);
+
         if (graph->acquired)
             library->runtime->close(graph->id);
     }
@@ -537,9 +716,27 @@ extern "C" int32_t gsl_close(gsl_handle_t graph_handle)
         runtime = library->runtime.get();
     }
 
+    silence(*graph);
+
     std::lock_guard<std::mutex> lock(graph->mutex);
 
     return graph->acquired ? code(runtime->close(graph->id)) : AR_EOK;
+}
+
+extern "C" int32_t gsl_register_event_cb(gsl_handle_t graph_handle,
+                                         gsl_cb_func_ptr cb, void *client_data)
+{
+    auto use = find(graph_handle);
+
+    if (!use.graph)
+        return AR_EHANDLE;
+
+    std::lock_guard<std::mutex> lock(use.graph->mutex);
+
+    use.graph->callback = cb;
+    use.graph->client = client_data;
+
+    return AR_EOK;
 }
 
 extern "C" int32_t gsl_ioctl(gsl_handle_t graph_handle, enum gsl_cmd_id cmd_id,

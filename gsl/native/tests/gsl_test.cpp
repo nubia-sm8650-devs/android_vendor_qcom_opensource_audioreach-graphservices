@@ -262,6 +262,76 @@ static void parameters()
     assert(open_pcms.empty());
 }
 
+struct Received {
+    std::atomic<int> count{0};
+    uint32_t module = 0;
+    uint32_t event = 0;
+    uint32_t size = 0;
+};
+
+static void receive(gsl_event_cb_params *event, void *client)
+{
+    auto &received = *static_cast<Received *>(client);
+
+    received.module = event->source_module_id;
+    received.event = event->event_id;
+    received.size = event->event_payload_size;
+    received.count++;
+}
+
+static void events()
+{
+    auto controls = make_mixer();
+
+    assert(!gsl_native::start(0, &controls,
+        std::make_unique<ar_topology::Bindings>(fixture())));
+
+    auto handle = open_graph(1);
+    Received received;
+    gsl_cmd_register_custom_event request{0x4001, 0x08001000, 0, 1};
+
+    configure(handle, false);
+    registered_events = 0;
+    queued_events = 0;
+    assert(!gsl_register_event_cb(handle, receive, &received));
+    assert(gsl_ioctl(handle, GSL_CMD_REGISTER_CUSTOM_EVENT, &request, 4) ==
+           AR_EBADPARAM);
+    assert(!gsl_ioctl(handle, GSL_CMD_REGISTER_CUSTOM_EVENT, &request,
+                      sizeof(request)));
+    assert(!registered_events && notification_ends.empty());
+    assert(!gsl_ioctl(handle, GSL_CMD_PREPARE, nullptr, 0));
+    assert(registered_events == 1 && notification_ends.size() == 1);
+
+    request.module_instance_id = 0x4002;
+    assert(gsl_ioctl(handle, GSL_CMD_REGISTER_CUSTOM_EVENT, &request,
+                     sizeof(request)) == AR_ENOTEXIST);
+    assert(registered_events == 1);
+
+    snd_ctl_event notification{};
+
+    queued_events = 1;
+    assert(write(notification_ends[0].second, &notification,
+                 sizeof(notification)) == sizeof(notification));
+
+    for (int i = 0; i < 500 && !received.count; i++)
+        usleep(10000);
+
+    assert(received.count == 1 && received.module == 0x4001 &&
+           received.event == 0x08001000 && !received.size);
+
+    assert(write(notification_ends[0].second, &notification,
+                 sizeof(notification)) == sizeof(notification));
+    usleep(50000);
+    assert(received.count == 1);
+
+    assert(!gsl_close(handle));
+    close(notification_ends[0].second);
+    notification_ends.clear();
+    queued_events = -1;
+    gsl_native::stop();
+    assert(open_pcms.empty());
+}
+
 static int32_t database(uint32_t command, const void *input, void *output)
 {
     static const uint32_t graph[] = {0xb0000001, 1, 0xb0000003, 0xb0000003, 0};
@@ -436,6 +506,7 @@ int main()
 {
     blocking_pcm();
     parameters();
+    events();
     queries();
     startup();
 
