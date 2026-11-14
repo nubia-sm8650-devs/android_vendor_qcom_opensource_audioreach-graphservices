@@ -262,6 +262,68 @@ static void parameters()
     assert(open_pcms.empty());
 }
 
+static void routes()
+{
+    auto controls = make_mixer();
+
+    assert(!gsl_native::start(0, &controls,
+        std::make_unique<ar_topology::Bindings>(fixture())));
+
+    auto handle = open_graph(2);
+    gsl_key_value_pair pair{0xa, 6}, ckv{50, 5};
+    gsl_cmd_graph_select selection{{1, &pair}, {1, &ckv}};
+    gsl_cmd_remove_graph removal{{1, &pair}};
+    auto &gate = controls.controls.at("hardware6");
+
+    pair.value = 9;
+    assert(gsl_ioctl(handle, GSL_CMD_CHANGE_GRAPH, &selection,
+                     sizeof(selection)));
+    pair.value = 6;
+    assert(!gsl_ioctl(handle, GSL_CMD_CHANGE_GRAPH, &selection,
+                      sizeof(selection)));
+    configure(handle, false);
+    calibrated.clear();
+    assert(!gsl_ioctl(handle, GSL_CMD_PREPARE, nullptr, 0));
+    assert(gate.enabled && opened(2) && open_pcms.size() == 1);
+    assert(calibrated.at(0xb0000006).second == ar_topology::Keys({{50, 5}}));
+
+    pair.value = 2;
+    assert(!gsl_ioctl(handle, GSL_CMD_CHANGE_GRAPH, &selection,
+                      sizeof(selection)));
+    assert(!gate.enabled && opened(2));
+
+    pair.value = 6;
+    assert(!gsl_ioctl(handle, GSL_CMD_ADD_GRAPH, &selection,
+                      sizeof(selection)));
+    assert(gsl_ioctl(handle, GSL_CMD_ADD_GRAPH, &selection,
+                     sizeof(selection)) == AR_EALREADY);
+    assert(gate.enabled);
+
+    gsl_cmd_properties properties{};
+
+    assert(!gsl_ioctl(handle, GSL_CMD_STOP, &properties, sizeof(properties)));
+    assert(!gsl_ioctl(handle, GSL_CMD_CLOSE_WITH_PROPS, &properties,
+                      sizeof(properties)));
+    assert(gate.enabled && opened(2)->state == SNDRV_PCM_STATE_PREPARED);
+
+    assert(!gsl_ioctl(handle, GSL_CMD_REMOVE_GRAPH, &removal,
+                      sizeof(removal)));
+    assert(gsl_ioctl(handle, GSL_CMD_REMOVE_GRAPH, &removal,
+                     sizeof(removal)) == AR_ENOTEXIST);
+    assert(!gate.enabled && controls.controls.at("hardware3").enabled);
+
+    pair.value = 2;
+    assert(gsl_ioctl(handle, GSL_CMD_REMOVE_GRAPH, &removal,
+                     sizeof(removal)) == AR_EBADPARAM);
+    pair.value = 1;
+    assert(gsl_ioctl(handle, GSL_CMD_CHANGE_GRAPH, &selection,
+                     sizeof(selection)));
+    assert(opened(2) && !opened(1));
+
+    gsl_native::stop();
+    assert(open_pcms.empty());
+}
+
 struct Received {
     std::atomic<int> count{0};
     uint32_t module = 0;
@@ -506,6 +568,7 @@ int main()
 {
     blocking_pcm();
     parameters();
+    routes();
     events();
     queries();
     startup();

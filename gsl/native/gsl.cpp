@@ -443,6 +443,78 @@ int registration(const Use &use, const void *payload, size_t size)
     return 0;
 }
 
+int route(const Use &use, std::vector<Keys> requests,
+          std::vector<Keys> calibration)
+{
+    auto &graph = *use.graph;
+
+    if (requests.empty())
+        return -EINVAL;
+
+    if (graph.acquired) {
+        int status = use.runtime->reroute(graph.id, requests, {}, calibration);
+        if (status)
+            return status;
+    } else {
+        ar_topology::Plan plan;
+
+        int status = use.bindings->select(requests, plan);
+        if (status)
+            return status;
+    }
+
+    graph.requests = std::move(requests);
+    graph.calibration = std::move(calibration);
+
+    return 0;
+}
+
+int select(const Use &use, gsl_cmd_id id, const void *payload, size_t size)
+{
+    auto &graph = *use.graph;
+    auto requests = graph.requests;
+    auto calibration = graph.calibration;
+
+    if (id == GSL_CMD_REMOVE_GRAPH) {
+        if (!payload || size != sizeof(gsl_cmd_remove_graph))
+            return -EINVAL;
+
+        Keys removed = keys(
+            &static_cast<const gsl_cmd_remove_graph *>(payload)->graph_key_vector);
+        auto found = std::find(requests.begin(), requests.end(), removed);
+
+        if (found == requests.end())
+            return -ENOENT;
+
+        calibration.erase(calibration.begin() + (found - requests.begin()));
+        requests.erase(found);
+
+        return route(use, std::move(requests), std::move(calibration));
+    }
+
+    if (!payload || size != sizeof(gsl_cmd_graph_select))
+        return -EINVAL;
+
+    auto &selection = *static_cast<const gsl_cmd_graph_select *>(payload);
+    Keys added = keys(&selection.graph_key_vector);
+
+    if (added.empty())
+        return -EINVAL;
+
+    if (id == GSL_CMD_CHANGE_GRAPH) {
+        requests.clear();
+        calibration.clear();
+    } else if (std::find(requests.begin(), requests.end(), added) !=
+               requests.end()) {
+        return -EALREADY;
+    }
+
+    requests.push_back(std::move(added));
+    calibration.push_back(keys(&selection.cal_key_vect));
+
+    return route(use, std::move(requests), std::move(calibration));
+}
+
 int buffer(Buffer &value, const void *payload, size_t size)
 {
     if (!payload || size != sizeof(gsl_cmd_configure_read_write_params))
@@ -506,9 +578,15 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
         return graph.acquired ? runtime.start(graph.id) : -EPERM;
     case GSL_CMD_STOP:
         if (payload)
-            return -EOPNOTSUPP;
+            return 0;
 
         return graph.acquired ? runtime.stop(graph.id) : 0;
+    case GSL_CMD_CLOSE_WITH_PROPS:
+        return 0;
+    case GSL_CMD_ADD_GRAPH:
+    case GSL_CMD_CHANGE_GRAPH:
+    case GSL_CMD_REMOVE_GRAPH:
+        return select(use, id, payload, size);
     default:
         return -EOPNOTSUPP;
     }
