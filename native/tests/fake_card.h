@@ -39,6 +39,8 @@ struct pcm {
     pcm_config config{};
     snd_pcm_uframes_t stop_threshold = 0;
     snd_pcm_uframes_t avail_min = 0;
+    snd_pcm_uframes_t start_threshold = 0;
+    snd_pcm_uframes_t moved = 0;
 };
 
 struct mixer_ctl {
@@ -289,8 +291,27 @@ extern "C" int pcm_ioctl(struct pcm *handle, int request, ...)
         return 0;
     }
 
+    if (unsigned(request) == SNDRV_PCM_IOCTL_WRITEI_FRAMES ||
+        unsigned(request) == SNDRV_PCM_IOCTL_READI_FRAMES) {
+        auto &transfer = *static_cast<snd_xferi *>(data);
+        bool capture = unsigned(request) == SNDRV_PCM_IOCTL_READI_FRAMES;
+
+        assert(capture == bool(handle->flags & PCM_IN));
+        handle->moved += transfer.frames;
+        transfer.result = transfer.frames;
+        return 0;
+    }
+
     assert(unsigned(request) == SNDRV_PCM_IOCTL_STATUS);
     static_cast<snd_pcm_status *>(data)->state = handle->state;
+    static_cast<snd_pcm_status *>(data)->avail = handle->buffer_frames;
+    return 0;
+}
+
+extern "C" int pcm_set_sw_config(struct pcm *handle,
+                                  const struct pcm_config *config)
+{
+    handle->start_threshold = config->start_threshold;
     return 0;
 }
 
