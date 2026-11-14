@@ -191,6 +191,13 @@ enum gsl_cmd_id {
 	 * and property_values
 	 */
 	GSL_CMD_CLOSE_WITH_PROPS = 0x15,
+	/**
+	 * Payload: struct gsl_cmd_configure_pcm_media
+	 * Describes the PCM data that the client reads or writes. Sent before
+	 * GSL_CMD_PREPARE by a client of an implementation that moves data
+	 * through a sound card PCM, which needs the format to open it.
+	 */
+	GSL_CMD_CONFIGURE_PCM_MEDIA = 0x16,
 	GSL_CMD_MAX
 };
 
@@ -407,6 +414,16 @@ struct gsl_cmd_graph_select {
 	 * Used to lookup the calibration data that will be set on the new graph
 	 */
 	struct gsl_key_vector cal_key_vect;
+};
+
+/** Cmd payload for GSL_CMD_CONFIGURE_PCM_MEDIA */
+struct gsl_cmd_configure_pcm_media {
+	uint32_t sample_rate;
+	uint32_t num_channels;
+	/** Valid bits of a sample */
+	uint32_t bit_width;
+	/** Bits that a sample occupies in the data */
+	uint32_t bits_per_sample;
 };
 
 /** Cmd payload for GSL_CMD_REMOVE_GRAPH*/

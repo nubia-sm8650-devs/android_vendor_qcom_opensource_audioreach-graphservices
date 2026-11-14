@@ -1926,6 +1926,10 @@ int32_t gsl_ioctl(gsl_handle_t graph_handle,
 			GSL_ERR("close with properties ioctl failed %d", rc);
 		break;
 
+	case GSL_CMD_CONFIGURE_PCM_MEDIA:
+		rc = AR_EUNSUPPORTED;
+		break;
+
 	case GSL_CMD_QUERY_GRAPH_DELAY:
 	case GSL_CMD_MAX:
 		break;
