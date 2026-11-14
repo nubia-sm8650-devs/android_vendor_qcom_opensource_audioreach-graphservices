@@ -179,6 +179,89 @@ static void blocking_pcm()
         assert(!control.enabled);
 }
 
+static void configure(gsl_handle_t handle, bool capture)
+{
+    gsl_cmd_configure_pcm_media media{48000, 2, 16, 16};
+    gsl_cmd_configure_read_write_params buffers{};
+
+    buffers.buff_size = 960;
+    buffers.num_buffs = 4;
+    buffers.attributes = GSL_DATA_MODE_BLOCKING;
+
+    assert(!gsl_ioctl(handle, GSL_CMD_CONFIGURE_PCM_MEDIA, &media,
+                      sizeof(media)));
+    assert(!gsl_ioctl(handle, capture ? GSL_CMD_CONFIGURE_READ_PARAMS :
+                                        GSL_CMD_CONFIGURE_WRITE_PARAMS,
+                      &buffers, sizeof(buffers)));
+}
+
+static void parameters()
+{
+    auto input = fixture();
+
+    for (auto &selection : input["selections"]) {
+        for (auto &tuning : selection["tuning"]) {
+            if (tuning["graph_id"].asUInt() == 1)
+                tuning["get_control"] = "get1";
+        }
+    }
+
+    auto controls = make_mixer();
+    auto &get = controls.controls["get1"];
+    auto &set = controls.controls.at("set1");
+
+    get.parameter = true;
+    get.reply = {1, 2, 3, 4};
+    assert(!gsl_native::start(0, &controls,
+        std::make_unique<ar_topology::Bindings>(input)));
+
+    gsl_key_value_pair selection{0xa, 1}, first{50, 5}, second{50, 6};
+    gsl_key_vector keys{1, &selection}, ckv{1, &first};
+    gsl_handle_t handle = nullptr;
+
+    assert(!gsl_open(&keys, &ckv, &handle));
+    configure(handle, false);
+
+    uint32_t record[] = {0x4001, 0x08001234, 4, 0, 77, 0};
+    uint32_t query[] = {0x4001, 0x0800113d, 4, 0, 0, 0};
+    auto *bytes = reinterpret_cast<uint8_t *>(record);
+
+    assert(gsl_set_custom_config(handle, nullptr, 8) == AR_EBADPARAM);
+    assert(!gsl_set_custom_config(handle, bytes, sizeof(record)));
+    assert(set.bytes.empty());
+    assert(gsl_get_custom_config(handle,
+        reinterpret_cast<uint8_t *>(query), sizeof(query)) == AR_ENOTREADY);
+
+    ckv.kvp = &second;
+    selection.value = 2;
+    assert(gsl_set_cal(handle, &keys, &ckv) == AR_EBADPARAM);
+    selection.value = 1;
+    assert(!gsl_set_cal(handle, &keys, &ckv));
+
+    calibrated.clear();
+    assert(!gsl_ioctl(handle, GSL_CMD_PREPARE, nullptr, 0));
+    assert(calibrated.at(0xb0000001).second == ar_topology::Keys({{50, 6}}));
+    assert(set.bytes.size() == 8 + sizeof(record));
+    assert(!std::memcmp(set.bytes.data() + 8, record, sizeof(record)));
+
+    record[4] = 78;
+    assert(!gsl_set_custom_config(handle, bytes, sizeof(record)));
+    assert(!std::memcmp(set.bytes.data() + 8, record, sizeof(record)));
+
+    assert(!gsl_get_custom_config(handle,
+        reinterpret_cast<uint8_t *>(query), sizeof(query)));
+    assert(query[4] == 0x04030201);
+
+    calibrated.clear();
+    ckv.kvp = &first;
+    assert(!gsl_set_cal(handle, nullptr, &ckv));
+    assert(calibrated.at(0xb0000001).first == ar_topology::Keys({{50, 6}}) &&
+           calibrated.at(0xb0000001).second == ar_topology::Keys({{50, 5}}));
+
+    gsl_native::stop();
+    assert(open_pcms.empty());
+}
+
 static void startup()
 {
     char directory[] = "/tmp/gsl-native-XXXXXX";
@@ -251,6 +334,7 @@ static void startup()
 int main()
 {
     blocking_pcm();
+    parameters();
     startup();
 
     return 0;

@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <cerrno>
 #include <climits>
+#include <cstring>
+#include <deque>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <new>
@@ -29,10 +32,20 @@ struct Buffer {
     uint32_t stop = 0;
 };
 
+struct Operation {
+    std::vector<uint8_t> data;
+    Keys gkv;
+    Keys tkv;
+    uint32_t tag = 0;
+    bool resolved = false;
+};
+
 struct Graph {
     std::mutex mutex;
     std::vector<Keys> requests;
     std::vector<Keys> calibration;
+    std::deque<Operation> pending;
+    bool initialized = false;
     std::optional<gsl_cmd_configure_pcm_media> media;
     Buffer read;
     Buffer write;
@@ -231,6 +244,38 @@ int acquire(const Use &use, Graph &graph)
     return 0;
 }
 
+int initialize(void *context, ar_topology::Parameters &writer,
+               const std::vector<ar_topology::Stream> &) noexcept
+{
+    auto &graph = *static_cast<Graph *>(context);
+
+    while (!graph.pending.empty()) {
+        auto &operation = graph.pending.front();
+
+        if (!operation.resolved) {
+            int status = writer.resolve_tag(operation.gkv, operation.tag,
+                                            operation.tkv, operation.data);
+            if (status)
+                return status;
+
+            operation.resolved = true;
+        }
+
+        if (!operation.data.empty()) {
+            int status = writer.set(operation.data.data(),
+                                    operation.data.size());
+            if (status)
+                return status;
+        }
+
+        graph.pending.pop_front();
+    }
+
+    graph.initialized = true;
+
+    return 0;
+}
+
 int buffer(Buffer &value, const void *payload, size_t size)
 {
     if (!payload || size != sizeof(gsl_cmd_configure_read_write_params))
@@ -279,7 +324,7 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
                 return status;
         }
 
-        return runtime.prepare(graph.id);
+        return runtime.prepare_parameters(graph.id, initialize, &graph);
     case GSL_CMD_START:
         return graph.acquired ? runtime.start(graph.id) : -EPERM;
     case GSL_CMD_STOP:
@@ -510,6 +555,128 @@ extern "C" int32_t gsl_ioctl(gsl_handle_t graph_handle, enum gsl_cmd_id cmd_id,
     try {
         return code(command(use, *use.graph, cmd_id, cmd_payload,
                             cmd_payload_sz));
+    } catch (const std::bad_alloc &) {
+        return AR_ENOMEMORY;
+    }
+}
+
+extern "C" int32_t gsl_set_custom_config(gsl_handle_t graph_handle,
+                                         const uint8_t *payload,
+                                         const uint32_t payload_size)
+{
+    if (!payload || !payload_size)
+        return AR_EBADPARAM;
+
+    if (payload_size > uint32_t(std::numeric_limits<int32_t>::max()) - 8)
+        return AR_EBADPARAM;
+
+    auto use = find(graph_handle);
+
+    if (!use.graph)
+        return AR_EHANDLE;
+
+    auto &graph = *use.graph;
+    std::lock_guard<std::mutex> lock(graph.mutex);
+
+    if (graph.initialized)
+        return code(use.runtime->set_parameters(graph.id, payload,
+                                                payload_size));
+
+    try {
+        Operation operation;
+
+        operation.data.assign(payload, payload + payload_size);
+        operation.resolved = true;
+        graph.pending.push_back(std::move(operation));
+
+        return AR_EOK;
+    } catch (const std::bad_alloc &) {
+        return AR_ENOMEMORY;
+    }
+}
+
+extern "C" int32_t gsl_get_custom_config(gsl_handle_t graph_handle,
+                                         uint8_t *payload, uint32_t size)
+{
+    if (!payload || !size)
+        return AR_EBADPARAM;
+
+    auto use = find(graph_handle);
+
+    if (!use.graph)
+        return AR_EHANDLE;
+
+    auto &graph = *use.graph;
+    std::lock_guard<std::mutex> lock(graph.mutex);
+
+    if (!graph.initialized)
+        return AR_ENOTREADY;
+
+    return code(use.runtime->get_parameters(graph.id, payload, size));
+}
+
+extern "C" int32_t gsl_set_config(gsl_handle_t graph_handle,
+                                  const struct gsl_key_vector *graph_key_vect,
+                                  uint32_t tag,
+                                  const struct gsl_key_vector *tag_key_vect)
+{
+    auto use = find(graph_handle);
+
+    if (!use.graph)
+        return AR_EHANDLE;
+
+    auto &graph = *use.graph;
+    std::lock_guard<std::mutex> lock(graph.mutex);
+
+    try {
+        Operation operation;
+
+        operation.gkv = keys(graph_key_vect);
+        operation.tkv = keys(tag_key_vect);
+        operation.tag = tag;
+
+        if (graph.initialized)
+            return code(use.runtime->set_tagged_parameters(graph.id,
+                operation.gkv, operation.tag, operation.tkv));
+
+        graph.pending.push_back(std::move(operation));
+
+        return AR_EOK;
+    } catch (const std::bad_alloc &) {
+        return AR_ENOMEMORY;
+    }
+}
+
+extern "C" int32_t gsl_set_cal(gsl_handle_t graph_handle,
+                               const struct gsl_key_vector *graph_key_vect,
+                               const struct gsl_key_vector *cal_key_vect)
+{
+    auto use = find(graph_handle);
+
+    if (!use.graph)
+        return AR_EHANDLE;
+
+    auto &graph = *use.graph;
+    std::lock_guard<std::mutex> lock(graph.mutex);
+
+    try {
+        Keys selection = keys(graph_key_vect);
+        Keys calibration = keys(cal_key_vect);
+
+        if (graph.acquired)
+            return code(use.runtime->set_calibration(graph.id, selection,
+                                                     calibration));
+
+        for (size_t i = 0; i < graph.requests.size(); i++) {
+            if (!selection.empty() && graph.requests[i] != selection)
+                continue;
+
+            graph.calibration[i] = std::move(calibration);
+
+            return AR_EOK;
+        }
+
+        return AR_EBADPARAM;
     } catch (const std::bad_alloc &) {
         return AR_ENOMEMORY;
     }
