@@ -346,6 +346,11 @@ extern "C" int pcm_ioctl(struct pcm *handle, int request, ...)
         return 0;
     }
 
+    if (unsigned(request) == SNDRV_PCM_IOCTL_TTSTAMP) {
+        assert(*static_cast<int *>(data) == SNDRV_PCM_TSTAMP_TYPE_MONOTONIC);
+        return 0;
+    }
+
     assert(unsigned(request) == SNDRV_PCM_IOCTL_STATUS);
     static_cast<snd_pcm_status *>(data)->state = handle->state;
     static_cast<snd_pcm_status *>(data)->avail = handle->buffer_frames;

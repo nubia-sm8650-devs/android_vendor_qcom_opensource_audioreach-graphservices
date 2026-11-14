@@ -36,6 +36,7 @@ struct Buffer {
     uint32_t count = 0;
     uint32_t start = 0;
     uint32_t stop = 0;
+    uint32_t mode = GSL_DATA_MODE_BLOCKING;
 };
 
 struct Operation {
@@ -67,6 +68,9 @@ struct Graph {
     std::vector<ar_topology::Pcm> configs;
     std::vector<ar_topology::Stream> streams;
     std::vector<ar_topology::FrontendMode> modes;
+    int32_t data_fd = -1;
+    uint32_t data_bytes = 0;
+    int32_t position_fd = -1;
 };
 
 struct Library {
@@ -171,9 +175,39 @@ int sample_format(const gsl_cmd_configure_pcm_media &media, pcm_format &format)
     return 0;
 }
 
-int start_on_command(const std::vector<ar_topology::Stream> &streams)
+int map_on_command(struct pcm *pcm, const pcm_config &config, unsigned frames)
 {
-    for (const auto &stream : streams) {
+    int type = SNDRV_PCM_TSTAMP_TYPE_MONOTONIC;
+
+    int status = pcm_ioctl(pcm, SNDRV_PCM_IOCTL_TTSTAMP, &type);
+    if (status)
+        return result(status);
+
+    snd_pcm_sw_params software{};
+
+    software.tstamp_mode = SNDRV_PCM_TSTAMP_ENABLE;
+    software.period_step = 1;
+    software.avail_min = config.avail_min ? config.avail_min :
+                                            config.period_size;
+    software.start_threshold = config.start_threshold;
+    software.stop_threshold = config.stop_threshold ? config.stop_threshold :
+                                                      frames;
+
+    status = pcm_ioctl(pcm, SNDRV_PCM_IOCTL_SW_PARAMS, &software);
+    if (status)
+        return result(status);
+
+    software.stop_threshold = software.boundary;
+
+    return result(pcm_ioctl(pcm, SNDRV_PCM_IOCTL_SW_PARAMS, &software));
+}
+
+int start_on_command(const std::vector<ar_topology::Pcm> &pcms,
+                     const std::vector<ar_topology::Stream> &streams)
+{
+    for (size_t i = 0; i < streams.size(); i++) {
+        const auto &stream = streams[i];
+
         if (!stream.handle)
             continue;
 
@@ -186,7 +220,11 @@ int start_on_command(const std::vector<ar_topology::Stream> &streams)
 
         config.start_threshold = frames + 1;
 
-        status = result(pcm_set_sw_config(stream.handle, &config));
+        if (pcms[i].flags & PCM_MMAP)
+            status = map_on_command(stream.handle, config, frames);
+        else
+            status = result(pcm_set_sw_config(stream.handle, &config));
+
         if (status)
             return status;
     }
@@ -244,6 +282,9 @@ int acquire(const Use &use, Graph &graph)
             config.period_count = buffer.count;
             config.start_threshold = buffer.start;
             config.stop_threshold = buffer.stop;
+
+            if (buffer.mode == GSL_DATA_MODE_PUSH_PULL)
+                flags |= PCM_MMAP | PCM_NOIRQ | PCM_MONOTONIC;
         }
 
         pcms.push_back({frontend.pcm_id, flags, config});
@@ -258,7 +299,7 @@ int acquire(const Use &use, Graph &graph)
     if (status)
         return status;
 
-    status = start_on_command(graph.streams);
+    status = start_on_command(pcms, graph.streams);
     if (status) {
         runtime.close(graph.id);
         graph.streams.clear();
@@ -385,7 +426,10 @@ void silence(Graph &graph)
     if (graph.wake >= 0)
         ::close(graph.wake);
 
-    graph.notifications = graph.wake = -1;
+    if (graph.data_fd >= 0)
+        ::close(graph.data_fd);
+
+    graph.notifications = graph.wake = graph.data_fd = -1;
 }
 
 int subscribe(const Use &use)
@@ -539,11 +583,83 @@ int buffer(Buffer &value, const void *payload, size_t size)
     auto &params =
         *static_cast<const gsl_cmd_configure_read_write_params *>(payload);
 
-    if (params.attributes != GSL_DATA_MODE_BLOCKING)
+    uint32_t mode = params.attributes & GSL_ATTRIBUTES_DATA_MODE_MASK;
+
+    if (mode != GSL_DATA_MODE_BLOCKING && mode != GSL_DATA_MODE_PUSH_PULL)
         return -EOPNOTSUPP;
 
     value = {params.buff_size, params.num_buffs, params.start_threshold,
-             params.stop_threshold};
+             params.stop_threshold, mode};
+
+    return 0;
+}
+
+int describe(const Use &use, gsl_cmd_id id, void *payload, size_t size)
+{
+    auto &graph = *use.graph;
+
+    if (!payload || size < sizeof(gsl_cmd_get_shmem_buf_info))
+        return -EINVAL;
+
+    auto &info = *static_cast<gsl_cmd_get_shmem_buf_info *>(payload);
+
+    if (!info.num_buffs || !info.buffs)
+        return -EINVAL;
+
+    if (!graph.acquired) {
+        int status = acquire(use, graph);
+        if (status)
+            return status;
+    }
+
+    bool capture = id == GSL_CMD_GET_READ_BUFF_INFO ||
+                   id == GSL_CMD_GET_READ_POS_BUFF_INFO;
+    const ar_topology::Pcm *config = nullptr;
+
+    for (const auto &candidate : graph.configs) {
+        if (bool(candidate.flags & PCM_IN) != capture ||
+            !(candidate.flags & PCM_MMAP))
+            continue;
+
+        if (config)
+            return -EOPNOTSUPP;
+
+        config = &candidate;
+    }
+
+    if (!config)
+        return -EOPNOTSUPP;
+
+    info.buffs[0].addr = nullptr;
+
+    if (id == GSL_CMD_GET_READ_POS_BUFF_INFO ||
+        id == GSL_CMD_GET_WRITE_POS_BUFF_INFO) {
+        int fd;
+
+        int status = use.runtime->pcm_poll_fd(graph.id, config->id, fd);
+        if (status)
+            return status;
+
+        graph.position_fd = fd;
+        info.size = 0;
+        info.buffs[0].metadata = reinterpret_cast<uintptr_t>(&graph.position_fd);
+
+        return 0;
+    }
+
+    if (graph.data_fd < 0) {
+        int fd = -1;
+
+        int status = use.runtime->export_buffer(graph.id, config->id, fd,
+                                                graph.data_bytes);
+        if (status)
+            return status;
+
+        graph.data_fd = fd;
+    }
+
+    info.size = graph.data_bytes;
+    info.buffs[0].metadata = reinterpret_cast<uintptr_t>(&graph.data_fd);
 
     return 0;
 }
@@ -590,6 +706,11 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
     }
     case GSL_CMD_REGISTER_CUSTOM_EVENT:
         return registration(use, payload, size);
+    case GSL_CMD_GET_READ_BUFF_INFO:
+    case GSL_CMD_GET_WRITE_BUFF_INFO:
+    case GSL_CMD_GET_READ_POS_BUFF_INFO:
+    case GSL_CMD_GET_WRITE_POS_BUFF_INFO:
+        return describe(use, id, payload, size);
     case GSL_CMD_START:
         return graph.acquired ? runtime.start(graph.id) : -EPERM;
     case GSL_CMD_STOP:
@@ -625,7 +746,8 @@ int transfer(Graph &graph, bool capture, gsl_buff *data, uint32_t *moved)
         if (bool(graph.configs[i].flags & PCM_IN) != capture)
             continue;
 
-        if (pcm || graph.modes[i] != ar_topology::FrontendMode::pcm)
+        if (pcm || (graph.configs[i].flags & PCM_MMAP) ||
+            graph.modes[i] != ar_topology::FrontendMode::pcm)
             return -EOPNOTSUPP;
 
         pcm = graph.streams[i].handle;

@@ -304,6 +304,74 @@ static void hostless()
     assert(open_pcms.empty());
 }
 
+static void mapped()
+{
+    auto controls = make_mixer();
+
+    assert(!gsl_native::start(0, &controls,
+        std::make_unique<ar_topology::Bindings>(fixture())));
+
+    auto handle = open_graph(1);
+    gsl_cmd_configure_pcm_media media{48000, 2, 16, 16};
+    gsl_cmd_configure_read_write_params buffers{};
+    gsl_shmem_buf entry{};
+    gsl_cmd_get_shmem_buf_info info{0, 1, &entry};
+
+    buffers.buff_size = 960;
+    buffers.num_buffs = 4;
+    buffers.attributes = GSL_DATA_MODE_PUSH_PULL;
+
+    assert(gsl_ioctl(handle, GSL_CMD_GET_WRITE_BUFF_INFO, &info,
+                     sizeof(info)) == AR_ENOTREADY);
+    assert(!gsl_ioctl(handle, GSL_CMD_CONFIGURE_PCM_MEDIA, &media,
+                      sizeof(media)));
+    assert(!gsl_ioctl(handle, GSL_CMD_CONFIGURE_WRITE_PARAMS, &buffers,
+                      sizeof(buffers)));
+    assert(open_pcms.empty());
+    assert(!gsl_ioctl(handle, GSL_CMD_GET_WRITE_BUFF_INFO, &info,
+                      sizeof(info)));
+
+    auto *pcm = opened(1);
+
+    assert(pcm && (pcm->flags & PCM_MMAP) && (pcm->flags & PCM_NOIRQ));
+    assert(pcm->config.period_size == 240 && pcm->config.period_count == 4);
+    assert(pcm->stop_threshold == snd_pcm_uframes_t(960) << 20);
+    assert(info.size == 3840 && entry.metadata);
+
+    int data = *reinterpret_cast<int32_t *>(uintptr_t(entry.metadata));
+
+    assert(fcntl(data, F_GETFD) >= 0);
+    entry = {};
+    assert(!gsl_ioctl(handle, GSL_CMD_GET_WRITE_BUFF_INFO, &info,
+                      sizeof(info)));
+    assert(*reinterpret_cast<int32_t *>(uintptr_t(entry.metadata)) == data);
+
+    entry = {};
+    assert(!gsl_ioctl(handle, GSL_CMD_GET_WRITE_POS_BUFF_INFO, &info,
+                      sizeof(info)));
+    assert(!info.size);
+    assert(*reinterpret_cast<int32_t *>(uintptr_t(entry.metadata)) ==
+           pcm_get_poll_fd(pcm));
+    assert(gsl_ioctl(handle, GSL_CMD_GET_READ_BUFF_INFO, &info,
+                     sizeof(info)) == AR_EUNSUPPORTED);
+
+    assert(!gsl_ioctl(handle, GSL_CMD_PREPARE, nullptr, 0));
+    assert(!gsl_ioctl(handle, GSL_CMD_START, nullptr, 0));
+    assert(pcm->state == SNDRV_PCM_STATE_RUNNING);
+
+    std::vector<uint8_t> bytes(960);
+    gsl_buff buffer{};
+    uint32_t moved = 0;
+
+    buffer.addr = bytes.data();
+    buffer.size = bytes.size();
+    assert(gsl_write(handle, 0, &buffer, &moved) == AR_EUNSUPPORTED);
+
+    assert(!gsl_close(handle));
+    assert(fcntl(data, F_GETFD) < 0 && open_pcms.empty());
+    gsl_native::stop();
+}
+
 static void routes()
 {
     auto controls = make_mixer();
@@ -611,6 +679,7 @@ int main()
     blocking_pcm();
     parameters();
     hostless();
+    mapped();
     routes();
     events();
     queries();
