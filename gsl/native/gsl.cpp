@@ -21,6 +21,7 @@
 #include <gsl_intf.h>
 #include <poll.h>
 #include <sound/asound.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <tinyalsa/asoundlib.h>
@@ -58,6 +59,7 @@ struct Graph {
     std::vector<std::vector<uint8_t>> registrations;
     int notifications = -1;
     int wake = -1;
+    int poller = -1;
     size_t next_pcm = 0;
     std::thread reader;
     std::optional<gsl_cmd_configure_pcm_media> media;
@@ -346,64 +348,89 @@ int initialize(void *context, ar_topology::Parameters &writer,
     return 0;
 }
 
+struct Notice {
+    uint32_t module;
+    uint32_t event;
+    std::vector<uint8_t> payload;
+};
+
+void collect(Graph &graph, ar_topology::Runtime &runtime, bool notified,
+             std::vector<Notice> &notices)
+{
+    if (!notified ||
+        ar_topology::consume_pcm_notifications(graph.notifications))
+        return;
+
+    std::vector<uint8_t> data;
+    int status = -EAGAIN;
+
+    for (size_t i = 0; i < graph.configs.size(); i++) {
+        uint32_t pcm = graph.configs[graph.next_pcm].id;
+
+        graph.next_pcm = (graph.next_pcm + 1) % graph.configs.size();
+
+        status = runtime.read_event(graph.id, pcm, data);
+        if (status != -EAGAIN)
+            break;
+    }
+
+    uint32_t header[3];
+
+    if (status || data.size() < sizeof(header))
+        return;
+
+    std::memcpy(header, data.data(), sizeof(header));
+    if (header[2] != data.size() - sizeof(header))
+        return;
+
+    notices.push_back({header[0], header[1],
+                       {data.begin() + sizeof(header), data.end()}});
+}
+
 void deliver(std::shared_ptr<Graph> graph, ar_topology::Runtime *runtime)
 {
-    pollfd fds[2] = {{graph->notifications, POLLIN, 0},
-                     {graph->wake, POLLIN, 0}};
-
     for (;;) {
-        if (::poll(fds, 2, -1) < 0) {
+        epoll_event ready[3];
+
+        int count = epoll_wait(graph->poller, ready, 3, -1);
+        if (count < 0) {
             if (errno == EINTR)
                 continue;
 
             return;
         }
 
-        if (fds[1].revents)
-            return;
+        bool notified = false;
 
-        std::vector<uint8_t> data;
+        for (int i = 0; i < count; i++) {
+            if (ready[i].data.fd == graph->wake)
+                return;
+
+            notified |= ready[i].data.fd == graph->notifications;
+        }
+
+        std::vector<Notice> notices;
         gsl_cb_func_ptr callback;
         void *client;
 
         {
             std::lock_guard<std::mutex> lock(graph->mutex);
 
-            if (ar_topology::consume_pcm_notifications(graph->notifications))
-                return;
-
-            int status = -EAGAIN;
-
-            for (size_t i = 0; i < graph->configs.size(); i++) {
-                uint32_t pcm = graph->configs[graph->next_pcm].id;
-
-                graph->next_pcm = (graph->next_pcm + 1) % graph->configs.size();
-
-                status = runtime->read_event(graph->id, pcm, data);
-                if (status != -EAGAIN)
-                    break;
-            }
-
-            if (status)
-                continue;
-
+            collect(*graph, *runtime, notified, notices);
             callback = graph->callback;
             client = graph->client;
         }
 
-        uint32_t header[3];
+        for (auto &notice : notices) {
+            if (!callback)
+                break;
 
-        if (!callback || data.size() < sizeof(header))
-            continue;
+            gsl_event_cb_params event{notice.module, notice.event,
+                uint32_t(notice.payload.size()),
+                notice.payload.empty() ? nullptr : notice.payload.data()};
 
-        std::memcpy(header, data.data(), sizeof(header));
-        if (header[2] != data.size() - sizeof(header))
-            continue;
-
-        gsl_event_cb_params event{header[0], header[1], header[2],
-                                  data.data() + sizeof(header)};
-
-        callback(&event, client);
+            callback(&event, client);
+        }
     }
 }
 
@@ -426,35 +453,63 @@ void silence(Graph &graph)
     if (graph.wake >= 0)
         ::close(graph.wake);
 
+    if (graph.poller >= 0)
+        ::close(graph.poller);
+
     if (graph.data_fd >= 0)
         ::close(graph.data_fd);
 
-    graph.notifications = graph.wake = graph.data_fd = -1;
+    graph.notifications = graph.wake = graph.poller = graph.data_fd = -1;
 }
 
-int subscribe(const Use &use)
+int watch(const Use &use, int fd)
 {
     auto &graph = *use.graph;
+    epoll_event event{};
 
-    if (graph.reader.joinable())
-        return 0;
+    event.events = EPOLLIN;
 
-    if (graph.notifications < 0) {
-        int status = use.runtime->subscribe_events(graph.id,
-            graph.configs[0].id, graph.notifications);
-        if (status)
-            return status;
+    if (graph.poller < 0) {
+        graph.poller = epoll_create1(EPOLL_CLOEXEC);
+        if (graph.poller < 0)
+            return -errno;
     }
 
     if (graph.wake < 0) {
         graph.wake = eventfd(0, EFD_CLOEXEC);
         if (graph.wake < 0)
             return -errno;
+
+        event.data.fd = graph.wake;
+
+        if (epoll_ctl(graph.poller, EPOLL_CTL_ADD, graph.wake, &event))
+            return -errno;
     }
 
-    graph.reader = std::thread(deliver, use.graph, use.runtime);
+    event.data.fd = fd;
+
+    if (epoll_ctl(graph.poller, EPOLL_CTL_ADD, fd, &event))
+        return -errno;
+
+    if (!graph.reader.joinable())
+        graph.reader = std::thread(deliver, use.graph, use.runtime);
 
     return 0;
+}
+
+int subscribe(const Use &use)
+{
+    auto &graph = *use.graph;
+
+    if (graph.notifications >= 0)
+        return 0;
+
+    int status = use.runtime->subscribe_events(graph.id, graph.configs[0].id,
+                                               graph.notifications);
+    if (status)
+        return status;
+
+    return watch(use, graph.notifications);
 }
 
 int enroll(const Use &use, const std::vector<uint8_t> &registration)
