@@ -66,6 +66,7 @@ struct Graph {
     ar_topology::SessionId id = 0;
     std::vector<ar_topology::Pcm> configs;
     std::vector<ar_topology::Stream> streams;
+    std::vector<ar_topology::FrontendMode> modes;
 };
 
 struct Library {
@@ -185,9 +186,9 @@ int start_on_command(const std::vector<ar_topology::Stream> &streams)
 
         config.start_threshold = frames + 1;
 
-        status = pcm_set_sw_config(stream.handle, &config);
+        status = result(pcm_set_sw_config(stream.handle, &config));
         if (status)
-            return result(status);
+            return status;
     }
 
     return 0;
@@ -203,14 +204,17 @@ int acquire(const Use &use, Graph &graph)
         return status;
 
     std::vector<ar_topology::Pcm> pcms;
+    std::vector<ar_topology::FrontendMode> modes;
 
     for (const auto &frontend : plan.frontends) {
-        if (frontend.mode != ar_topology::FrontendMode::pcm)
+        bool hostless = frontend.mode == ar_topology::FrontendMode::hostless;
+
+        if (frontend.mode != ar_topology::FrontendMode::pcm && !hostless)
             return -EOPNOTSUPP;
 
         const Buffer &buffer = frontend.capture ? graph.read : graph.write;
 
-        if (!graph.media || !buffer.size || !buffer.count)
+        if (!graph.media || (!hostless && (!buffer.size || !buffer.count)))
             return -EPERM;
 
         pcm_config config{};
@@ -221,18 +225,29 @@ int acquire(const Use &use, Graph &graph)
 
         uint32_t frame = graph.media->num_channels *
                          (graph.media->bits_per_sample / 8);
-        if (!graph.media->sample_rate || !frame || buffer.size % frame)
+        if (!graph.media->sample_rate || !frame)
             return -EINVAL;
+
+        unsigned flags = frontend.capture ? PCM_IN : PCM_OUT;
 
         config.rate = graph.media->sample_rate;
         config.channels = graph.media->num_channels;
-        config.period_size = buffer.size / frame;
-        config.period_count = buffer.count;
-        config.start_threshold = buffer.start;
-        config.stop_threshold = buffer.stop;
 
-        pcms.push_back({frontend.pcm_id,
-                        unsigned(frontend.capture ? PCM_IN : PCM_OUT), config});
+        if (hostless) {
+            config.period_size = config.rate / 100;
+            config.period_count = 2;
+        } else {
+            if (buffer.size % frame)
+                return -EINVAL;
+
+            config.period_size = buffer.size / frame;
+            config.period_count = buffer.count;
+            config.start_threshold = buffer.start;
+            config.stop_threshold = buffer.stop;
+        }
+
+        pcms.push_back({frontend.pcm_id, flags, config});
+        modes.push_back(frontend.mode);
     }
 
     if (pcms.empty())
@@ -252,6 +267,7 @@ int acquire(const Use &use, Graph &graph)
     }
 
     graph.configs = std::move(pcms);
+    graph.modes = std::move(modes);
     graph.acquired = true;
 
     return 0;
@@ -609,7 +625,7 @@ int transfer(Graph &graph, bool capture, gsl_buff *data, uint32_t *moved)
         if (bool(graph.configs[i].flags & PCM_IN) != capture)
             continue;
 
-        if (pcm)
+        if (pcm || graph.modes[i] != ar_topology::FrontendMode::pcm)
             return -EOPNOTSUPP;
 
         pcm = graph.streams[i].handle;

@@ -262,6 +262,48 @@ static void parameters()
     assert(open_pcms.empty());
 }
 
+static void hostless()
+{
+    auto input = fixture();
+
+    for (auto &frontend : input["frontends"]) {
+        if (frontend["pcm_id"].asUInt() == 4)
+            frontend["mode"] = "hostless";
+    }
+
+    auto controls = make_mixer();
+
+    assert(!gsl_native::start(0, &controls,
+        std::make_unique<ar_topology::Bindings>(input)));
+
+    auto handle = open_graph(4);
+    gsl_cmd_configure_pcm_media media{16000, 1, 16, 16};
+
+    assert(gsl_ioctl(handle, GSL_CMD_PREPARE, nullptr, 0) == AR_ENOTREADY);
+    assert(!gsl_ioctl(handle, GSL_CMD_CONFIGURE_PCM_MEDIA, &media,
+                      sizeof(media)));
+    assert(!gsl_ioctl(handle, GSL_CMD_PREPARE, nullptr, 0));
+
+    auto *pcm = opened(4);
+
+    assert(pcm && pcm->config.rate == 16000 && pcm->config.channels == 1 &&
+           pcm->config.period_size == 160 && pcm->config.period_count == 2);
+    assert(!gsl_ioctl(handle, GSL_CMD_START, nullptr, 0));
+    assert(pcm->state == SNDRV_PCM_STATE_RUNNING);
+
+    std::vector<uint8_t> data(320);
+    gsl_buff buffer{};
+    uint32_t moved = 0;
+
+    buffer.addr = data.data();
+    buffer.size = data.size();
+    assert(gsl_read(handle, 0, &buffer, &moved) == AR_EUNSUPPORTED);
+    assert(!pcm->moved);
+
+    gsl_native::stop();
+    assert(open_pcms.empty());
+}
+
 static void routes()
 {
     auto controls = make_mixer();
@@ -568,6 +610,7 @@ int main()
 {
     blocking_pcm();
     parameters();
+    hostless();
     routes();
     events();
     queries();
