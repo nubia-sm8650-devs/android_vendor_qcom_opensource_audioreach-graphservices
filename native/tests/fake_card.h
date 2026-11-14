@@ -188,9 +188,16 @@ static ar_topology::Keys calibration_keys(const AcdbGraphKeyVector &vector)
     return keys;
 }
 
+static int32_t (*acdb_query)(uint32_t, const void *, void *);
+
 extern "C" int32_t acdb_ioctl(uint32_t command, const void *input,
                               uint32_t, void *output, uint32_t)
 {
+    if (acdb_query && command != ACDB_CMD_GET_SUBGRAPH_CALIBRATION_DATA_NONPERSIST &&
+        command != ACDB_CMD_GET_SUBGRAPH_GLB_PSIST_IDENTIFIERS &&
+        command != ACDB_CMD_GET_SUBGRAPH_CALIBRATION_DATA_PERSIST)
+        return acdb_query(command, input, output);
+
     if (command != ACDB_CMD_GET_SUBGRAPH_CALIBRATION_DATA_NONPERSIST)
         return AR_ENOTEXIST;
 

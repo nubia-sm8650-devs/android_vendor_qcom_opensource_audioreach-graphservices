@@ -262,6 +262,107 @@ static void parameters()
     assert(open_pcms.empty());
 }
 
+static int32_t database(uint32_t command, const void *input, void *output)
+{
+    static const uint32_t graph[] = {0xb0000001, 1, 0xb0000003, 0xb0000003, 0};
+
+    if (command == ACDB_CMD_GET_GRAPH) {
+        auto &keys = *static_cast<const AcdbGraphKeyVector *>(input);
+        auto &reply = *static_cast<AcdbGetGraphRsp *>(output);
+
+        assert(keys.num_keys == 1 && keys.graph_key_vector[0].value == 1);
+        reply.num_subgraphs = 2;
+        reply.size = sizeof(graph);
+
+        if (reply.subgraphs)
+            std::memcpy(reply.subgraphs, graph, sizeof(graph));
+
+        return AR_EOK;
+    }
+
+    if (command == ACDB_CMD_GET_TAGGED_MODULES) {
+        auto &request = *static_cast<const AcdbGetTaggedModulesReq *>(input);
+        auto &reply = *static_cast<AcdbGetTaggedModulesRsp *>(output);
+
+        assert(request.num_sg_ids == 2 && request.sg_ids[0] == 0xb0000001 &&
+               request.sg_ids[1] == 0xb0000003);
+
+        if (request.tag_id != 5)
+            return AR_ENOTEXIST;
+
+        reply.num_tagged_mids = 1;
+
+        if (reply.tagged_mid_list)
+            reply.tagged_mid_list[0] = {0x7001, 0x4001};
+
+        return AR_EOK;
+    }
+
+    if (command == ACDB_CMD_GET_MODULE_TAG_DATA) {
+        auto &request = *static_cast<const AcdbSgIdModuleTag *>(input);
+        auto &reply = *static_cast<AcdbBlob *>(output);
+
+        assert(request.num_sg_ids == 2 && request.module_tag.tag_id == 5 &&
+               request.module_tag.tag_key_vector.num_keys == 1);
+        reply.buf_size = 4;
+
+        if (reply.buf)
+            std::memcpy(reply.buf, "data", 4);
+
+        return AR_EOK;
+    }
+
+    assert(command == ACDB_CMD_GET_TAGS_FROM_GKV);
+
+    auto &reply = *static_cast<AcdbCmdGetTagsFromGkvRsp *>(output);
+
+    reply.num_tags = 3;
+    reply.list_size = 24;
+
+    return AR_EOK;
+}
+
+static void queries()
+{
+    gsl_key_value_pair selection{0xa, 1}, value{30, 3};
+    gsl_key_vector keys{1, &selection}, tkv{1, &value};
+    gsl_module_id_info *modules = nullptr;
+    uint32_t size = 0;
+
+    acdb_query = database;
+
+    assert(gsl_get_tagged_module_info(&keys, 6, &modules, &size) ==
+           AR_ENOTEXIST);
+    assert(!modules && !size);
+    assert(!gsl_get_tagged_module_info(&keys, 5, &modules, &size));
+    assert(size == sizeof(*modules) + sizeof(gsl_module_id_info_entry));
+    assert(modules->num_modules == 1 &&
+           modules->module_entry[0].module_id == 0x7001 &&
+           modules->module_entry[0].module_iid == 0x4001);
+    free(modules);
+
+    uint8_t data[8] = {};
+    size_t bytes = 0;
+
+    assert(!gsl_get_tagged_data(&keys, 5, &tkv, nullptr, &bytes) && bytes == 4);
+    bytes = 2;
+    assert(gsl_get_tagged_data(&keys, 5, &tkv, data, &bytes) == AR_ENEEDMORE);
+    assert(bytes == 4);
+    bytes = sizeof(data);
+    assert(!gsl_get_tagged_data(&keys, 5, &tkv, data, &bytes) && bytes == 4);
+    assert(!std::memcmp(data, "data", 4));
+
+    std::vector<uint8_t> tags(sizeof(gsl_tag_module_info) + 24);
+
+    bytes = 0;
+    assert(!gsl_get_tags_with_module_info(&keys, nullptr, &bytes));
+    assert(bytes == tags.size());
+    assert(!gsl_get_tags_with_module_info(&keys, tags.data(), &bytes));
+    assert(reinterpret_cast<gsl_tag_module_info *>(tags.data())->num_tags == 3);
+
+    acdb_query = nullptr;
+}
+
 static void startup()
 {
     char directory[] = "/tmp/gsl-native-XXXXXX";
@@ -335,6 +436,7 @@ int main()
 {
     blocking_pcm();
     parameters();
+    queries();
     startup();
 
     return 0;
