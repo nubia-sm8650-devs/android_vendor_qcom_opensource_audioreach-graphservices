@@ -81,6 +81,8 @@ static mixer *backend_mixer;
 static unsigned backend_rate;
 static std::string backend_data_format;
 
+static int card_watch_end = -1;
+
 extern "C" int pcm_start(struct pcm *handle);
 
 extern "C" int __real_open(const char *, int, ...);
@@ -97,6 +99,15 @@ extern "C" int __wrap_open(const char *path, int flags, ...)
     }
 
     assert(!std::strcmp(path, "/dev/snd/controlC0"));
+
+    if ((flags & O_ACCMODE) == O_RDONLY) {
+        int ends[2];
+
+        assert(card_watch_end < 0 && !pipe2(ends, O_CLOEXEC));
+        card_watch_end = ends[1];
+        return ends[0];
+    }
+
     control_fd = __real_open("/dev/null", flags);
     assert(control_fd >= 0);
     return control_fd;

@@ -3,7 +3,61 @@
 
 #include "gsl_native.h"
 
+#include <atomic>
+#include <fstream>
 #include <gsl_intf.h>
+
+static mixer *card_mixer;
+static int open_mixers;
+static int absent_scans;
+static int acdb_users;
+static int32_t acdb_error;
+static std::atomic<bool> card_lost{false};
+
+extern "C" struct mixer *mixer_open(unsigned card)
+{
+    if (card || !card_mixer)
+        return nullptr;
+
+    if (absent_scans) {
+        absent_scans--;
+
+        return nullptr;
+    }
+
+    open_mixers++;
+
+    return card_mixer;
+}
+
+extern "C" const char *mixer_get_name(struct mixer *)
+{
+    return "CARD";
+}
+
+extern "C" void mixer_close(struct mixer *)
+{
+    open_mixers--;
+}
+
+extern "C" int32_t acdb_init(AcdbDataFiles *files, AcdbFile *)
+{
+    assert(files);
+
+    if (acdb_error)
+        return acdb_error;
+
+    acdb_users++;
+
+    return 0;
+}
+
+extern "C" int32_t acdb_deinit(void)
+{
+    acdb_users--;
+
+    return 0;
+}
 
 static struct pcm *opened(unsigned id)
 {
@@ -125,9 +179,79 @@ static void blocking_pcm()
         assert(!control.enabled);
 }
 
+static void startup()
+{
+    char directory[] = "/tmp/gsl-native-XXXXXX";
+
+    assert(mkdtemp(directory));
+
+    std::string path = std::string(directory) + "/bindings.json";
+    Json::StreamWriterBuilder writer;
+
+    std::ofstream(path) << Json::writeString(writer, fixture());
+
+    auto controls = make_mixer();
+    gsl_acdb_data_files files{};
+    gsl_init_data data{};
+    auto lost = [] { card_lost = true; };
+    std::chrono::milliseconds wait{};
+
+    data.acdb_files = &files;
+    card_mixer = &controls;
+    controls.controls.at("hardware3").enabled = 1;
+
+    assert(gsl_native::init(data, "CARD", path + ".missing", wait, lost) ==
+           -ENOENT);
+    assert(gsl_native::init(data, "OTHER", path, wait, lost) == -ENODEV);
+    acdb_error = AR_EFAILED;
+    assert(gsl_native::init(data, "CARD", path, wait, lost) == -EIO);
+    acdb_error = 0;
+    assert(!open_mixers && !acdb_users && card_watch_end < 0);
+
+    assert(!gsl_native::init(data, "CARD", path, wait, lost));
+    assert(gsl_native::init(data, "CARD", path, wait, lost) == -EALREADY);
+    assert(open_mixers == 1 && acdb_users == 1 && card_watch_end >= 0);
+    assert(!controls.controls.at("hardware3").enabled);
+    assert(!gsl_close(open_graph(1)));
+    assert(!card_lost);
+
+    close(card_watch_end);
+    card_watch_end = -1;
+
+    for (int i = 0; i < 500 && !card_lost; i++)
+        usleep(10000);
+
+    assert(card_lost);
+
+    gsl_deinit();
+    assert(!open_mixers && !acdb_users);
+
+    gsl_key_value_pair pair{0xa, 1};
+    gsl_key_vector keys{1, &pair};
+    gsl_handle_t handle = nullptr;
+
+    assert(gsl_open(&keys, nullptr, &handle) == AR_ENOTREADY);
+
+    card_lost = false;
+    absent_scans = 1;
+    assert(gsl_native::init(data, "CARD", path, wait, lost) == -ENODEV);
+    absent_scans = 1;
+    assert(!gsl_native::init(data, "CARD", path, std::chrono::seconds(2),
+                             lost));
+    gsl_deinit();
+    close(card_watch_end);
+    card_watch_end = -1;
+    assert(!card_lost && !open_mixers && !acdb_users);
+
+    card_mixer = nullptr;
+    remove(path.c_str());
+    rmdir(directory);
+}
+
 int main()
 {
     blocking_pcm();
+    startup();
 
     return 0;
 }
