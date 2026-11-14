@@ -1928,6 +1928,7 @@ int32_t gsl_ioctl(gsl_handle_t graph_handle,
 
 	case GSL_CMD_CONFIGURE_PCM_MEDIA:
 	case GSL_CMD_CONFIGURE_COMPRESS_MEDIA:
+	case GSL_CMD_CONFIGURE_BACKEND_MEDIA:
 		rc = AR_EUNSUPPORTED;
 		break;
 
@@ -2251,6 +2252,11 @@ int32_t gsl_set_temp_path_to_acdb(uint32_t path_length, const char_t *temp_path)
 		GSL_ERR("acdb set temp path failed with %d", rc);
 
 	return rc;
+}
+
+int32_t gsl_get_backends(struct gsl_backend *backends, uint32_t *num_backends)
+{
+	return AR_EUNSUPPORTED;
 }
 
 int32_t gsl_get_graph_alias(const struct gsl_key_vector *graph_key_vect,

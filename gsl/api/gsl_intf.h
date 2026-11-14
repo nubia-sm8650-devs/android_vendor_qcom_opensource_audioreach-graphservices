@@ -18,6 +18,7 @@ extern "C" {
 
 #define GSL_MAX_NUM_OF_ACDB_FILES 20 /**< maximum number of acdb files */
 #define GSL_MAX_LEN_OF_ACDB_FILENAME 256 /**< maxumum lengh of filename */
+#define GSL_MAX_LEN_OF_BACKEND_NAME 64 /**< with the terminating null */
 
 #define GSL_ATTRIBUTES_DATA_MODE_MASK 0x7
 /**< keep 3 bits for specifying the data mode */
@@ -205,6 +206,14 @@ enum gsl_cmd_id {
 	 * data through a sound card compress device.
 	 */
 	GSL_CMD_CONFIGURE_COMPRESS_MEDIA = 0x17,
+	/**
+	 * Payload: struct gsl_cmd_configure_backend_media
+	 * Describes the PCM format of the backend that a graph key vector
+	 * routes to. Sent before the graph is prepared or before the key vector
+	 * is added, by a client of an implementation that configures the
+	 * backends of a sound card.
+	 */
+	GSL_CMD_CONFIGURE_BACKEND_MEDIA = 0x18,
 	GSL_CMD_MAX
 };
 
@@ -431,6 +440,22 @@ struct gsl_cmd_configure_pcm_media {
 	uint32_t bit_width;
 	/** Bits that a sample occupies in the data */
 	uint32_t bits_per_sample;
+};
+
+/** Cmd payload for GSL_CMD_CONFIGURE_BACKEND_MEDIA */
+struct gsl_cmd_configure_backend_media {
+	/** Key vector of the graph, open or about to be added */
+	struct gsl_key_vector graph_key_vector;
+	/** Backend ID from gsl_get_backends() */
+	uint32_t backend;
+	uint32_t sample_rate;
+	uint32_t num_channels;
+	/** Valid bits of a sample */
+	uint32_t bit_width;
+	/** Bits that a sample occupies in the data */
+	uint32_t bits_per_sample;
+	/** Data format as in the hardware endpoint media format */
+	uint32_t data_format;
 };
 
 /** Cmd payload for GSL_CMD_REMOVE_GRAPH*/
@@ -1271,6 +1296,26 @@ int32_t gsl_get_supported_gkvs(uint32_t *key_ids,
  */
 int32_t gsl_get_graph_alias(const struct gsl_key_vector *graph_key_vect,
 	char *alias, uint32_t *alias_len);
+
+/** A backend of the sound card, as returned by gsl_get_backends() */
+struct gsl_backend {
+	uint32_t id;
+	uint32_t is_capture;
+	char name[GSL_MAX_LEN_OF_BACKEND_NAME];
+};
+
+/**
+ * \brief List the backends of the sound card that graphs can route to.
+ *
+ * An implementation on SPF has no sound card and returns AR_EUNSUPPORTED.
+ *
+ * \param[out] backends: array to fill, or NULL to query the count
+ * \param[in,out] num_backends: in the capacity of the array, out the count
+ *
+ * \return AR_EOK on success, AR_ENEEDMORE if the array is too small,
+ * error code otherwise
+ */
+int32_t gsl_get_backends(struct gsl_backend *backends, uint32_t *num_backends);
 
 /**
  * \brief add acdb database
