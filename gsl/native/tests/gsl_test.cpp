@@ -504,6 +504,96 @@ static void events()
     assert(open_pcms.empty());
 }
 
+static void count(gsl_event_cb_params *event, void *client)
+{
+    auto &counts = *static_cast<std::atomic<int> *>(client);
+
+    assert(event->source_module_id == GSL_EVENT_SRC_MODULE_ID_GSL);
+    assert(!event->event_payload_size);
+
+    if (event->event_id == GSL_EVENT_ID_WRITE_DONE)
+        counts += 1;
+    else if (event->event_id == GSL_EVENT_ID_EOS)
+        counts += 100;
+}
+
+static bool issued(unsigned long command)
+{
+    return std::find(compress_commands.begin(), compress_commands.end(),
+                     command) != compress_commands.end();
+}
+
+static void compressed()
+{
+    auto input = fixture();
+
+    input["frontends"][1]["mode"] = "compress";
+
+    auto controls = make_mixer();
+
+    compress_mixer = &controls;
+    compress_commands.clear();
+    assert(!gsl_native::start(0, &controls,
+        std::make_unique<ar_topology::Bindings>(input)));
+
+    auto handle = open_graph(2);
+    std::atomic<int> counts{0};
+    snd_compr_params params{};
+
+    params.codec.id = SND_AUDIOCODEC_MP3;
+    params.codec.sample_rate = 44100;
+    params.codec.ch_in = params.codec.ch_out = 2;
+    params.buffer.fragment_size = 1024;
+    params.buffer.fragments = 4;
+
+    assert(!gsl_register_event_cb(handle, count, &counts));
+    assert(gsl_ioctl(handle, GSL_CMD_EOS, nullptr, 0) == AR_EUNSUPPORTED);
+    assert(gsl_ioctl(handle, GSL_CMD_PREPARE, nullptr, 0) == AR_ENOTREADY);
+    assert(gsl_ioctl(handle, GSL_CMD_CONFIGURE_COMPRESS_MEDIA, &params, 8) ==
+           AR_EBADPARAM);
+    assert(!gsl_ioctl(handle, GSL_CMD_CONFIGURE_COMPRESS_MEDIA, &params,
+                      sizeof(params)));
+    assert(!gsl_ioctl(handle, GSL_CMD_PREPARE, nullptr, 0));
+    assert(compress_path == "/dev/snd/comprC0D2" && open_pcms.empty());
+    assert(compress_params.codec.id == SND_AUDIOCODEC_MP3 &&
+           compress_params.buffer.fragment_size == 1024);
+    assert(!issued(SNDRV_COMPRESS_START));
+    assert(!gsl_ioctl(handle, GSL_CMD_START, nullptr, 0));
+    assert(issued(SNDRV_COMPRESS_START));
+
+    std::vector<uint8_t> data(2048, 7), echo(2048);
+    gsl_buff buffer{};
+    uint32_t moved = 0;
+
+    buffer.addr = data.data();
+    buffer.size = data.size();
+    assert(gsl_read(handle, 0, &buffer, &moved) == AR_EUNSUPPORTED);
+    assert(!gsl_write(handle, 0, &buffer, &moved) && moved == 2048);
+    assert(read(compress_peer, echo.data(), echo.size()) == 2048 &&
+           echo == data);
+    usleep(50000);
+    assert(!counts);
+
+    assert(!gsl_ioctl(handle, GSL_CMD_EOS, nullptr, 0));
+
+    for (int i = 0; i < 500 && counts < 102; i++)
+        usleep(10000);
+
+    assert(counts == 102 && issued(SNDRV_COMPRESS_PARTIAL_DRAIN));
+
+    compress_commands.clear();
+    assert(!gsl_ioctl(handle, GSL_CMD_FLUSH, nullptr, 0));
+    assert(issued(SNDRV_COMPRESS_STOP));
+    assert(!gsl_ioctl(handle, GSL_CMD_STOP, nullptr, 0));
+    assert(!gsl_close(handle));
+    assert(fcntl(compress_fd, F_GETFD) < 0);
+
+    close(compress_peer);
+    compress_fd = compress_peer = -1;
+    compress_mixer = nullptr;
+    gsl_native::stop();
+}
+
 static int32_t database(uint32_t command, const void *input, void *output)
 {
     static const uint32_t graph[] = {0xb0000001, 1, 0xb0000003, 0xb0000003, 0};
@@ -682,6 +772,7 @@ int main()
     mapped();
     routes();
     events();
+    compressed();
     queries();
     startup();
 

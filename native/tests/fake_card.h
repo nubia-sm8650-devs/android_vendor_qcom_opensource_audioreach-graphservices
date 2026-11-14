@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #include <acdb.h>
 #include <ar_osal_error.h>
@@ -71,6 +72,8 @@ static int rejected_open = -1;
 static pcm bad_pcm{UINT32_MAX};
 static int control_fd = -1;
 static int compress_fd = -1;
+static int compress_peer = -1;
+static uint32_t compress_copied;
 static std::string compress_path;
 static int compress_access;
 static snd_compr_params compress_params{};
@@ -96,8 +99,12 @@ extern "C" int __wrap_open(const char *path, int flags, ...)
         assert(compress_fd < 0);
         compress_access = flags & O_ACCMODE;
         compress_path = path;
-        compress_fd = __real_open("/dev/null", flags);
-        assert(compress_fd >= 0);
+        int ends[2];
+
+        assert(!socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                           0, ends));
+        compress_fd = ends[0];
+        compress_peer = ends[1];
         return compress_fd;
     }
 
@@ -140,6 +147,18 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
                 !compress_mixer->controls.at("set2").bytes.empty();
             return 0;
         }
+
+        if (command == SNDRV_COMPRESS_TSTAMP) {
+            static_cast<snd_compr_tstamp *>(data)->copied_total =
+                compress_copied;
+            return 0;
+        }
+
+        if (command == SNDRV_COMPRESS_START ||
+            command == SNDRV_COMPRESS_NEXT_TRACK ||
+            command == SNDRV_COMPRESS_PARTIAL_DRAIN ||
+            command == SNDRV_COMPRESS_DRAIN)
+            return 0;
 
         assert(command == SNDRV_COMPRESS_STOP);
         errno = EPERM;

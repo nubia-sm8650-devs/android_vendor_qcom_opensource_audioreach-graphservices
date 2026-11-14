@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#include "compress.h"
 #include "gsl_native.h"
 
 #include <ar_topology_pcm_controls.h>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <system_error>
 #include <thread>
 #include <vector>
 #include <apm_api.h>
@@ -60,6 +62,8 @@ struct Graph {
     int notifications = -1;
     int wake = -1;
     int poller = -1;
+    std::optional<snd_compr_params> codec;
+    std::unique_ptr<gsl_native::CompressStream> compress;
     size_t next_pcm = 0;
     std::thread reader;
     std::optional<gsl_cmd_configure_pcm_media> media;
@@ -234,6 +238,8 @@ int start_on_command(const std::vector<ar_topology::Pcm> &pcms,
     return 0;
 }
 
+int watch(const Use &use, int fd);
+
 int acquire(const Use &use, Graph &graph)
 {
     auto &runtime = *use.runtime;
@@ -248,9 +254,17 @@ int acquire(const Use &use, Graph &graph)
 
     for (const auto &frontend : plan.frontends) {
         bool hostless = frontend.mode == ar_topology::FrontendMode::hostless;
+        unsigned direction = frontend.capture ? PCM_IN : PCM_OUT;
 
-        if (frontend.mode != ar_topology::FrontendMode::pcm && !hostless)
-            return -EOPNOTSUPP;
+        if (frontend.mode == ar_topology::FrontendMode::compress) {
+            if (!graph.codec)
+                return -EPERM;
+
+            pcms.push_back({frontend.pcm_id, direction, {}, *graph.codec});
+            modes.push_back(frontend.mode);
+
+            continue;
+        }
 
         const Buffer &buffer = frontend.capture ? graph.read : graph.write;
 
@@ -268,7 +282,7 @@ int acquire(const Use &use, Graph &graph)
         if (!graph.media->sample_rate || !frame)
             return -EINVAL;
 
-        unsigned flags = frontend.capture ? PCM_IN : PCM_OUT;
+        unsigned flags = direction;
 
         config.rate = graph.media->sample_rate;
         config.channels = graph.media->num_channels;
@@ -313,7 +327,31 @@ int acquire(const Use &use, Graph &graph)
     graph.modes = std::move(modes);
     graph.acquired = true;
 
-    return 0;
+    if (graph.modes[0] != ar_topology::FrontendMode::compress)
+        return 0;
+
+    int fd = -1;
+
+    status = runtime.compress_fd(graph.id, graph.configs[0].id, fd);
+
+    if (!status) {
+        try {
+            graph.compress.reset(new gsl_native::CompressStream(fd,
+                *graph.codec, graph.configs[0].flags & PCM_IN));
+            status = watch(use, graph.compress->event_fd());
+        } catch (const std::system_error &error) {
+            status = -error.code().value();
+        }
+    }
+
+    if (status) {
+        graph.compress.reset();
+        runtime.close(graph.id);
+        graph.streams.clear();
+        graph.acquired = false;
+    }
+
+    return status;
 }
 
 int initialize(void *context, ar_topology::Parameters &writer,
@@ -357,6 +395,18 @@ struct Notice {
 void collect(Graph &graph, ar_topology::Runtime &runtime, bool notified,
              std::vector<Notice> &notices)
 {
+    if (graph.compress) {
+        gsl_native::CompressStream::Event event;
+
+        while (!graph.compress->next_event(event)) {
+            bool eos = event == gsl_native::CompressStream::Event::eos;
+
+            notices.push_back({GSL_EVENT_SRC_MODULE_ID_GSL,
+                uint32_t(eos ? GSL_EVENT_ID_EOS : GSL_EVENT_ID_WRITE_DONE),
+                {}});
+        }
+    }
+
     if (!notified ||
         ar_topology::consume_pcm_notifications(graph.notifications))
         return;
@@ -640,7 +690,8 @@ int buffer(Buffer &value, const void *payload, size_t size)
 
     uint32_t mode = params.attributes & GSL_ATTRIBUTES_DATA_MODE_MASK;
 
-    if (mode != GSL_DATA_MODE_BLOCKING && mode != GSL_DATA_MODE_PUSH_PULL)
+    if (mode != GSL_DATA_MODE_BLOCKING && mode != GSL_DATA_MODE_PUSH_PULL &&
+        mode != GSL_DATA_MODE_NON_BLOCKING)
         return -EOPNOTSUPP;
 
     value = {params.buff_size, params.num_buffs, params.start_threshold,
@@ -766,13 +817,46 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
     case GSL_CMD_GET_READ_POS_BUFF_INFO:
     case GSL_CMD_GET_WRITE_POS_BUFF_INFO:
         return describe(use, id, payload, size);
-    case GSL_CMD_START:
-        return graph.acquired ? runtime.start(graph.id) : -EPERM;
-    case GSL_CMD_STOP:
-        if (payload)
+    case GSL_CMD_CONFIGURE_COMPRESS_MEDIA: {
+        if (!payload || size != sizeof(snd_compr_params))
+            return -EINVAL;
+
+        auto &codec = *static_cast<const snd_compr_params *>(payload);
+
+        if (graph.compress)
+            return graph.compress->configure(codec);
+
+        if (graph.acquired)
+            return -EBUSY;
+
+        graph.codec = codec;
+
+        return 0;
+    }
+    case GSL_CMD_START: {
+        if (!graph.acquired)
+            return -EPERM;
+
+        int status = runtime.start(graph.id);
+
+        if (!status && graph.compress)
+            status = graph.compress->start();
+
+        return status;
+    }
+    case GSL_CMD_STOP: {
+        if (payload || !graph.acquired)
             return 0;
 
-        return graph.acquired ? runtime.stop(graph.id) : 0;
+        int first = graph.compress ? graph.compress->stop() : 0;
+        int status = runtime.stop(graph.id);
+
+        return first ? first : status;
+    }
+    case GSL_CMD_EOS:
+        return graph.compress ? graph.compress->eos() : -EOPNOTSUPP;
+    case GSL_CMD_FLUSH:
+        return graph.compress ? graph.compress->flush() : -EOPNOTSUPP;
     case GSL_CMD_CLOSE_WITH_PROPS:
         return 0;
     case GSL_CMD_ADD_GRAPH:
@@ -794,6 +878,24 @@ int transfer(Graph &graph, bool capture, gsl_buff *data, uint32_t *moved)
 
     if (data->flags || data->metadata_size || data->alloc_info.alloc_size)
         return -EOPNOTSUPP;
+
+    if (graph.compress) {
+        if (capture != graph.compress->capturing())
+            return -EOPNOTSUPP;
+
+        if (data->size && !data->addr)
+            return -EINVAL;
+
+        size_t count = 0;
+
+        int status = capture ?
+            graph.compress->read(data->addr, data->size, count) :
+            graph.compress->write(data->addr, data->size, count);
+
+        *moved = uint32_t(count);
+
+        return status;
+    }
 
     struct pcm *pcm = nullptr;
 
@@ -924,6 +1026,7 @@ void stop()
         (void)handle;
 
         silence(*graph);
+        graph->compress.reset();
 
         if (graph->acquired)
             library->runtime->close(graph->id);
@@ -990,6 +1093,8 @@ extern "C" int32_t gsl_close(gsl_handle_t graph_handle)
     silence(*graph);
 
     std::lock_guard<std::mutex> lock(graph->mutex);
+
+    graph->compress.reset();
 
     return graph->acquired ? code(runtime->close(graph->id)) : AR_EOK;
 }
