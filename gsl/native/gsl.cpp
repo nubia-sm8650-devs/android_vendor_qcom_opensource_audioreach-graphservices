@@ -10,6 +10,7 @@
 #include <climits>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -54,6 +55,8 @@ struct Graph {
     std::mutex mutex;
     std::vector<Keys> requests;
     std::vector<Keys> calibration;
+    std::map<Keys, ar_topology::HardwareConfig> hardware;
+    bool managed = false;
     std::deque<Operation> pending;
     bool initialized = false;
     gsl_cb_func_ptr callback = nullptr;
@@ -240,6 +243,21 @@ int start_on_command(const std::vector<ar_topology::Pcm> &pcms,
 
 int watch(const Use &use, int fd);
 
+std::vector<ar_topology::HardwareConfig>
+backends(const Graph &graph, const std::vector<Keys> &requests)
+{
+    std::vector<ar_topology::HardwareConfig> configs;
+
+    for (const auto &request : requests) {
+        auto found = graph.hardware.find(request);
+
+        if (found != graph.hardware.end())
+            configs.push_back(found->second);
+    }
+
+    return configs;
+}
+
 int acquire(const Use &use, Graph &graph)
 {
     auto &runtime = *use.runtime;
@@ -310,10 +328,17 @@ int acquire(const Use &use, Graph &graph)
     if (pcms.empty())
         return -EINVAL;
 
-    status = runtime.acquire(graph.requests, pcms, graph.id, graph.streams,
-                             graph.calibration);
+    auto hardware = backends(graph, graph.requests);
+
+    status = hardware.empty() ?
+        runtime.acquire(graph.requests, pcms, graph.id, graph.streams,
+                        graph.calibration) :
+        runtime.acquire(graph.requests, pcms, hardware, graph.id,
+                        graph.streams, graph.calibration);
     if (status)
         return status;
+
+    graph.managed = !hardware.empty();
 
     status = start_on_command(pcms, graph.streams);
     if (status) {
@@ -617,7 +642,13 @@ int route(const Use &use, std::vector<Keys> requests,
         return -EINVAL;
 
     if (graph.acquired) {
-        int status = use.runtime->reroute(graph.id, requests, {}, calibration);
+        std::vector<ar_topology::HardwareConfig> hardware;
+
+        if (graph.managed)
+            hardware = backends(graph, requests);
+
+        int status = use.runtime->reroute(graph.id, requests, hardware,
+                                          calibration);
         if (status)
             return status;
     } else {
@@ -630,6 +661,49 @@ int route(const Use &use, std::vector<Keys> requests,
 
     graph.requests = std::move(requests);
     graph.calibration = std::move(calibration);
+
+    for (auto entry = graph.hardware.begin(); entry != graph.hardware.end();) {
+        bool used = std::find(graph.requests.begin(), graph.requests.end(),
+                              entry->first) != graph.requests.end();
+
+        entry = used ? std::next(entry) : graph.hardware.erase(entry);
+    }
+
+    return 0;
+}
+
+int backend(const Use &use, const void *payload, size_t size)
+{
+    if (!payload || size != sizeof(gsl_cmd_configure_backend_media))
+        return -EINVAL;
+
+    auto &request =
+        *static_cast<const gsl_cmd_configure_backend_media *>(payload);
+    const auto &aifs = use.bindings->aifs();
+    auto found = aifs.find(request.backend);
+
+    if (found == aifs.end())
+        return -ENOENT;
+
+    gsl_cmd_configure_pcm_media media{request.sample_rate,
+        request.num_channels, request.bit_width, request.bits_per_sample};
+    pcm_format format;
+
+    int status = sample_format(media, format);
+    if (status)
+        return status;
+
+    const char *name = format == PCM_FORMAT_S16_LE ? "S16_LE" :
+                       format == PCM_FORMAT_S24_LE ? "S24_LE" :
+                       format == PCM_FORMAT_S24_3LE ? "S24_3LE" : "S32_LE";
+    Keys selection = keys(&request.graph_key_vector);
+
+    if (selection.empty() || !request.sample_rate || !request.num_channels)
+        return -EINVAL;
+
+    use.graph->hardware[selection] = {selection,
+        {request.sample_rate, request.num_channels, request.data_format, name},
+        found->second.id};
 
     return 0;
 }
@@ -833,6 +907,8 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
 
         return 0;
     }
+    case GSL_CMD_CONFIGURE_BACKEND_MEDIA:
+        return backend(use, payload, size);
     case GSL_CMD_START: {
         if (!graph.acquired)
             return -EPERM;
@@ -1097,6 +1173,43 @@ extern "C" int32_t gsl_close(gsl_handle_t graph_handle)
     graph->compress.reset();
 
     return graph->acquired ? code(runtime->close(graph->id)) : AR_EOK;
+}
+
+extern "C" int32_t gsl_get_backends(struct gsl_backend *backends,
+                                    uint32_t *num_backends)
+{
+    if (!num_backends)
+        return AR_EBADPARAM;
+
+    std::lock_guard<std::mutex> lock(library_mutex);
+
+    if (!library)
+        return AR_ENOTREADY;
+
+    const auto &aifs = library->bindings->aifs();
+    uint32_t capacity = *num_backends;
+
+    *num_backends = uint32_t(aifs.size());
+
+    if (!backends)
+        return AR_EOK;
+
+    if (capacity < aifs.size())
+        return AR_ENEEDMORE;
+
+    for (const auto &[id, aif] : aifs) {
+        gsl_backend entry{};
+
+        if (aif.aif_name.size() >= sizeof(entry.name))
+            return AR_EFAILED;
+
+        entry.id = id;
+        entry.is_capture = aif.capture;
+        std::memcpy(entry.name, aif.aif_name.data(), aif.aif_name.size());
+        *backends++ = entry;
+    }
+
+    return AR_EOK;
 }
 
 extern "C" int32_t gsl_register_event_cb(gsl_handle_t graph_handle,

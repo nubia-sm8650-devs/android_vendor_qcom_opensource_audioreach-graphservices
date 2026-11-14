@@ -372,6 +372,80 @@ static void mapped()
     gsl_native::stop();
 }
 
+static void backend_media()
+{
+    auto input = fixture();
+    auto &gate = input["hardware_gates"][0];
+
+    gate["module"] = 0x4003;
+    gate["dai"] = 16;
+    gate["direction"] = "playback";
+
+    auto &backend = gate["backend"];
+
+    backend["dai"] = 16;
+    backend["provider"] = "/dais";
+    backend["path"] = "/sound/speaker";
+    backend["name"] = "Speaker Playback";
+    backend["aif"]["id"] = 0;
+    backend["aif"]["name"] = "SPEAKER-RX";
+
+    for (const char *key : {"rate", "format", "channels", "data_format"})
+        backend["controls"][key] = std::string("backend ") + key;
+
+    auto controls = make_mixer();
+
+    controls.controls["backend rate"].enums = {"96000", "48000"};
+    controls.controls["backend channels"].enums = {"1", "2"};
+    controls.controls["backend format"].enums = {"S32_LE", "S16_LE"};
+    controls.controls["backend data_format"].enums = {
+        "Topology", "Compressed over PCM", "Fixed Point"};
+
+    uint32_t count = 0;
+
+    assert(gsl_get_backends(nullptr, &count) == AR_ENOTREADY);
+    assert(!gsl_native::start(0, &controls,
+        std::make_unique<ar_topology::Bindings>(input)));
+    assert(!gsl_get_backends(nullptr, &count) && count == 1);
+
+    gsl_backend listed[1]{};
+
+    count = 0;
+    assert(gsl_get_backends(listed, &count) == AR_ENEEDMORE && count == 1);
+    assert(!gsl_get_backends(listed, &count));
+    assert(!listed[0].id && !listed[0].is_capture &&
+           std::string(listed[0].name) == "SPEAKER-RX");
+
+    auto handle = open_graph(1);
+    gsl_key_value_pair pair{0xa, 1};
+    gsl_cmd_configure_backend_media media{{1, &pair}, 0, 48000, 2, 16, 16, 1};
+
+    configure(handle, false);
+    media.backend = 7;
+    assert(gsl_ioctl(handle, GSL_CMD_CONFIGURE_BACKEND_MEDIA, &media,
+                     sizeof(media)) == AR_ENOTEXIST);
+    media.backend = 0;
+    media.bit_width = 20;
+    assert(gsl_ioctl(handle, GSL_CMD_CONFIGURE_BACKEND_MEDIA, &media,
+                     sizeof(media)) == AR_EUNSUPPORTED);
+    media.bit_width = 16;
+    assert(!gsl_ioctl(handle, GSL_CMD_CONFIGURE_BACKEND_MEDIA, &media,
+                      sizeof(media)));
+
+    backend_mixer = &controls;
+    backend_rate = 48000;
+    backend_data_format = "Fixed Point";
+    assert(!gsl_ioctl(handle, GSL_CMD_PREPARE, nullptr, 0));
+    assert(controls.controls.at("backend rate").enabled == 1 &&
+           controls.controls.at("backend format").enabled == 1 &&
+           controls.controls.at("backend channels").enabled == 1 &&
+           controls.controls.at("backend data_format").enabled == 2);
+
+    backend_mixer = nullptr;
+    gsl_native::stop();
+    assert(open_pcms.empty());
+}
+
 static void routes()
 {
     auto controls = make_mixer();
@@ -770,6 +844,7 @@ int main()
     parameters();
     hostless();
     mapped();
+    backend_media();
     routes();
     events();
     compressed();
