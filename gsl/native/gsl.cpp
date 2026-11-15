@@ -16,6 +16,8 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <set>
+#include <string>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -73,6 +75,7 @@ struct Graph {
     Buffer read;
     Buffer write;
     bool acquired = false;
+    bool passive = false;
     ar_topology::SessionId id = 0;
     std::vector<ar_topology::Pcm> configs;
     std::vector<ar_topology::Stream> streams;
@@ -243,6 +246,38 @@ int start_on_command(const std::vector<ar_topology::Pcm> &pcms,
 
 int watch(const Use &use, int fd);
 
+int resolve(const ar_topology::Bindings &bindings,
+            const std::vector<Keys> &requests, ar_topology::Plan &plan,
+            bool &passive)
+{
+    int status = bindings.select(requests, plan);
+
+    passive = false;
+
+    if (status != -EOPNOTSUPP)
+        return status;
+
+    for (const auto &request : requests) {
+        std::set<uint32_t> graphs;
+        std::set<std::string> references;
+
+        int member = bindings.members(request, graphs, references);
+        if (member)
+            return member;
+    }
+
+    ar_topology::Plan partial;
+
+    for (const auto &request : requests) {
+        if (!bindings.select({request}, partial))
+            return status;
+    }
+
+    passive = true;
+
+    return 0;
+}
+
 std::vector<ar_topology::HardwareConfig>
 backends(const Graph &graph, const std::vector<Keys> &requests)
 {
@@ -263,8 +298,8 @@ int acquire(const Use &use, Graph &graph)
     auto &runtime = *use.runtime;
     ar_topology::Plan plan;
 
-    int status = use.bindings->select(graph.requests, plan);
-    if (status)
+    int status = resolve(*use.bindings, graph.requests, plan, graph.passive);
+    if (status || graph.passive)
         return status;
 
     std::vector<ar_topology::Pcm> pcms;
@@ -654,7 +689,7 @@ int route(const Use &use, std::vector<Keys> requests,
     } else {
         ar_topology::Plan plan;
 
-        int status = use.bindings->select(requests, plan);
+        int status = resolve(*use.bindings, requests, plan, graph.passive);
         if (status)
             return status;
     }
@@ -875,6 +910,9 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
                 return status;
         }
 
+        if (graph.passive)
+            return 0;
+
         int status = runtime.prepare_parameters(graph.id, initialize, &graph);
 
         while (!status && !graph.registrations.empty()) {
@@ -911,7 +949,7 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
         return backend(use, payload, size);
     case GSL_CMD_START: {
         if (!graph.acquired)
-            return -EPERM;
+            return graph.passive ? 0 : -EPERM;
 
         int status = runtime.start(graph.id);
 
@@ -1133,7 +1171,8 @@ extern "C" int32_t gsl_open(const struct gsl_key_vector *graph_key_vect,
 
         ar_topology::Plan plan;
 
-        int status = library->bindings->select(graph->requests, plan);
+        int status = resolve(*library->bindings, graph->requests, plan,
+                             graph->passive);
         if (status)
             return code(status);
 

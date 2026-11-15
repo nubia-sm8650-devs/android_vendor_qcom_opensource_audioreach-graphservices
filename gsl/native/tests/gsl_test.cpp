@@ -446,6 +446,56 @@ static void backend_media()
     assert(open_pcms.empty());
 }
 
+static Json::Value loopback_input()
+{
+    auto input = fixture();
+    Json::Value device, merged, pair(Json::arrayValue);
+
+    pair.append("0xb");
+    pair.append("1");
+    device["graph_keys"].append(pair);
+    device["graphs"].append(5);
+
+    Json::Value tuning;
+
+    tuning["graph_id"] = 5;
+    tuning["subgraph"] = 0xb0000005u;
+    tuning["set_control"] = "set5";
+    tuning["modules"].append(0x4005);
+    device["tuning"].append(tuning);
+    device["references"] = Json::Value(Json::arrayValue);
+    input["selections"].append(device);
+
+    merged = input["selections"][0];
+    merged["graph_keys"].append(pair);
+    merged["graphs"].append(5);
+    merged["tuning"].append(tuning);
+    input["selections"].append(merged);
+
+    return input;
+}
+
+static void passive()
+{
+    auto controls = make_mixer();
+
+    assert(!gsl_native::start(0, &controls,
+        std::make_unique<ar_topology::Bindings>(loopback_input())));
+
+    gsl_key_value_pair pair{0xb, 1};
+    gsl_key_vector keys{1, &pair};
+    gsl_handle_t handle = nullptr;
+
+    assert(!gsl_open(&keys, nullptr, &handle));
+    assert(!gsl_ioctl(handle, GSL_CMD_PREPARE, nullptr, 0));
+    assert(!gsl_ioctl(handle, GSL_CMD_START, nullptr, 0));
+    assert(open_pcms.empty() && !controls.controls.at("hardware5").enabled);
+    assert(!gsl_ioctl(handle, GSL_CMD_STOP, nullptr, 0));
+    assert(!gsl_close(handle));
+
+    gsl_native::stop();
+}
+
 static void routes()
 {
     auto controls = make_mixer();
@@ -845,6 +895,7 @@ int main()
     hostless();
     mapped();
     backend_media();
+    passive();
     routes();
     events();
     compressed();
