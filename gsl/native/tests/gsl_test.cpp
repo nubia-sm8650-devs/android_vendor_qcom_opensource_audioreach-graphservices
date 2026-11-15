@@ -246,6 +246,27 @@ static void restarts()
     assert(open_pcms.empty());
 }
 
+static int32_t tagged(uint32_t command, const void *input, void *output)
+{
+    if (command != ACDB_CMD_GET_MODULE_TAG_DATA)
+        return AR_ENOTEXIST;
+
+    auto &tag = static_cast<const AcdbSgIdModuleTag *>(input)->module_tag;
+    auto *response = static_cast<AcdbBlob *>(output);
+
+    assert(tag.tag_id == 9 && tag.tag_key_vector.num_keys == 1);
+
+    uint32_t record[] = {0x4001, 0x08001235, 4, 0,
+                         tag.tag_key_vector.graph_key_vector[0].value, 0};
+
+    if (response->buf)
+        std::memcpy(response->buf, record, sizeof(record));
+
+    response->buf_size = sizeof(record);
+
+    return AR_EOK;
+}
+
 static void parameters()
 {
     auto input = fixture();
@@ -302,6 +323,17 @@ static void parameters()
     assert(!gsl_get_custom_config(handle,
         reinterpret_cast<uint8_t *>(query), sizeof(query)));
     assert(query[4] == 0x04030201);
+
+    gsl_key_value_pair choice{60, 7};
+    gsl_key_vector tkv{1, &choice};
+
+    assert(gsl_set_config(handle, &keys, 9, &tkv) == AR_ENOTEXIST);
+    acdb_query = tagged;
+    assert(!gsl_set_config(handle, &keys, 9, &tkv));
+    acdb_query = nullptr;
+    record[1] = 0x08001235;
+    record[4] = 7;
+    assert(!std::memcmp(set.bytes.data() + 8, record, sizeof(record)));
 
     calibrated.clear();
     ckv.kvp = &first;
