@@ -57,7 +57,7 @@ struct Graph {
     std::mutex mutex;
     std::vector<Keys> requests;
     std::vector<Keys> calibration;
-    std::map<Keys, ar_topology::HardwareConfig> hardware;
+    std::map<Keys, std::vector<ar_topology::HardwareConfig>> hardware;
     bool managed = false;
     std::deque<Operation> pending;
     bool initialized = false;
@@ -287,7 +287,8 @@ backends(const Graph &graph, const std::vector<Keys> &requests)
         auto found = graph.hardware.find(request);
 
         if (found != graph.hardware.end())
-            configs.push_back(found->second);
+            configs.insert(configs.end(), found->second.begin(),
+                           found->second.end());
     }
 
     return configs;
@@ -736,9 +737,21 @@ int backend(const Use &use, const void *payload, size_t size)
     if (selection.empty() || !request.sample_rate || !request.num_channels)
         return -EINVAL;
 
-    use.graph->hardware[selection] = {selection,
+    ar_topology::HardwareConfig config{selection,
         {request.sample_rate, request.num_channels, request.data_format, name},
         found->second.id};
+    auto &configs = use.graph->hardware[selection];
+
+    for (auto &known : configs) {
+        if (known.backend != config.backend)
+            continue;
+
+        known = std::move(config);
+
+        return 0;
+    }
+
+    configs.push_back(std::move(config));
 
     return 0;
 }
