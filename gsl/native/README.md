@@ -3,7 +3,8 @@
 `libar-gsl` built from this directory implements `gsl_intf.h` on the
 mainline kernel, which runs AudioReach graphs from a topology file. Build it
 by setting the `qtiaudio` `feature_native_topology` Soong variable. AGM, PAL
-and the HALs link the same library name.
+and the HALs link the same library name. The same variable builds the paths
+of AGM and PAL for a native sound card.
 
 ## How it maps
 
