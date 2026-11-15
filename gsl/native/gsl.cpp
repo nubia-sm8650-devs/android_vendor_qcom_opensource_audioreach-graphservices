@@ -1,13 +1,18 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#define LOG_TAG "gsl-native"
+
 #include "compress.h"
 #include "gsl_native.h"
 
+#include <ar_topology_log.h>
 #include <ar_topology_pcm_controls.h>
 #include <ar_topology_runtime.h>
 
 #include <algorithm>
 #include <cerrno>
 #include <climits>
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <iterator>
@@ -84,6 +89,8 @@ struct Graph {
     Buffer write;
     bool acquired = false;
     bool started = false;
+    bool flowing = false;
+    int failure = 0;
     bool passive = false;
     ar_topology::SessionId id = 0;
     std::vector<ar_topology::Pcm> configs;
@@ -141,6 +148,49 @@ int32_t code(int status)
     }
 }
 
+const char *reason(int32_t status)
+{
+#define NAME(value) case value: return #value;
+    switch (status) {
+    NAME(AR_EFAILED)
+    NAME(AR_EBADPARAM)
+    NAME(AR_EUNSUPPORTED)
+    NAME(AR_ENORESOURCE)
+    NAME(AR_EHANDLE)
+    NAME(AR_EALREADY)
+    NAME(AR_ENOTREADY)
+    NAME(AR_EBUSY)
+    NAME(AR_EABORTED)
+    NAME(AR_ECONTINUE)
+    NAME(AR_ENOMEMORY)
+    NAME(AR_ENOTEXIST)
+    NAME(AR_ETIMEOUT)
+    NAME(AR_EIODATA)
+    NAME(AR_ENEEDMORE)
+    default:
+        return "error";
+    }
+#undef NAME
+}
+
+[[gnu::format(printf, 2, 3)]]
+int32_t report(int32_t status, const char *format, ...)
+{
+    char message[384];
+    va_list args;
+
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+
+    if (status)
+        ALOGE("%s: %s", message, reason(status));
+    else
+        ALOGD("%s", message);
+
+    return status;
+}
+
 int result(int status)
 {
     return status < 0 && errno ? -errno : status;
@@ -157,6 +207,129 @@ Keys keys(const gsl_key_vector *vector)
         value.emplace_back(vector->kvp[i].key, vector->kvp[i].value);
 
     std::sort(value.begin(), value.end());
+
+    return value;
+}
+
+const char *name(gsl_cmd_id id)
+{
+#define NAME(value) case GSL_CMD_##value: return #value;
+    switch (id) {
+    NAME(START)
+    NAME(PREPARE)
+    NAME(FLUSH)
+    NAME(STOP)
+    NAME(ADD_GRAPH)
+    NAME(REMOVE_GRAPH)
+    NAME(CHANGE_GRAPH)
+    NAME(CONFIGURE_WRITE_PARAMS)
+    NAME(CONFIGURE_READ_PARAMS)
+    NAME(EOS)
+    NAME(GET_WRITE_BUFF_INFO)
+    NAME(GET_READ_BUFF_INFO)
+    NAME(GET_WRITE_POS_BUFF_INFO)
+    NAME(GET_READ_POS_BUFF_INFO)
+    NAME(REGISTER_CUSTOM_EVENT)
+    NAME(SUSPEND)
+    NAME(CLOSE_WITH_PROPS)
+    NAME(CONFIGURE_PCM_MEDIA)
+    NAME(CONFIGURE_COMPRESS_MEDIA)
+    NAME(CONFIGURE_BACKEND_MEDIA)
+    default:
+        return "command";
+    }
+#undef NAME
+}
+
+std::string detail(gsl_cmd_id id, const void *payload, size_t size)
+{
+    char value[160] = "";
+
+    if (!payload)
+        return value;
+
+    switch (id) {
+    case GSL_CMD_CONFIGURE_PCM_MEDIA:
+        if (size == sizeof(gsl_cmd_configure_pcm_media)) {
+            auto &media =
+                *static_cast<const gsl_cmd_configure_pcm_media *>(payload);
+
+            snprintf(value, sizeof(value), " %u Hz, %u channels, %u bits in %u",
+                     media.sample_rate, media.num_channels, media.bit_width,
+                     media.bits_per_sample);
+        }
+
+        break;
+    case GSL_CMD_CONFIGURE_READ_PARAMS:
+    case GSL_CMD_CONFIGURE_WRITE_PARAMS:
+        if (size == sizeof(gsl_cmd_configure_read_write_params)) {
+            auto &buffers = *static_cast<
+                const gsl_cmd_configure_read_write_params *>(payload);
+
+            snprintf(value, sizeof(value), " %u buffers of %u bytes, mode %#x",
+                     buffers.num_buffs, buffers.buff_size,
+                     buffers.attributes & GSL_ATTRIBUTES_DATA_MODE_MASK);
+        }
+
+        break;
+    case GSL_CMD_CONFIGURE_COMPRESS_MEDIA:
+        if (size == sizeof(snd_compr_params)) {
+            auto &params = *static_cast<const snd_compr_params *>(payload);
+
+            snprintf(value, sizeof(value), " codec %u, %u Hz, %u channels, "
+                     "%u fragments of %u bytes", params.codec.id,
+                     params.codec.sample_rate, params.codec.ch_in,
+                     params.buffer.fragments, params.buffer.fragment_size);
+        }
+
+        break;
+    case GSL_CMD_CONFIGURE_BACKEND_MEDIA:
+        if (size == sizeof(gsl_cmd_configure_backend_media)) {
+            auto &media =
+                *static_cast<const gsl_cmd_configure_backend_media *>(payload);
+
+            snprintf(value, sizeof(value), " backend %u, %u Hz, %u channels, "
+                     "%u bits in %u, data format %u for ", media.backend,
+                     media.sample_rate, media.num_channels, media.bit_width,
+                     media.bits_per_sample, media.data_format);
+
+            return value + ar_topology::text(keys(&media.graph_key_vector));
+        }
+
+        break;
+    case GSL_CMD_ADD_GRAPH:
+    case GSL_CMD_CHANGE_GRAPH:
+        if (size == sizeof(gsl_cmd_graph_select)) {
+            auto &select = *static_cast<const gsl_cmd_graph_select *>(payload);
+
+            return " " + ar_topology::text(keys(&select.graph_key_vector)) +
+                   " calibration " +
+                   ar_topology::text(keys(&select.cal_key_vect));
+        }
+
+        break;
+    case GSL_CMD_REMOVE_GRAPH:
+        if (size == sizeof(gsl_cmd_remove_graph))
+            return " " + ar_topology::text(keys(&static_cast<
+                const gsl_cmd_remove_graph *>(payload)->graph_key_vector));
+
+        break;
+    case GSL_CMD_REGISTER_CUSTOM_EVENT:
+        if (size >= sizeof(gsl_cmd_register_custom_event)) {
+            auto &event =
+                *static_cast<const gsl_cmd_register_custom_event *>(payload);
+
+            snprintf(value, sizeof(value), " module %#x event %#x",
+                     event.module_instance_id, event.event_id);
+        }
+
+        break;
+    case GSL_CMD_STOP:
+    case GSL_CMD_CLOSE_WITH_PROPS:
+        return " with properties, ignored";
+    default:
+        break;
+    }
 
     return value;
 }
@@ -410,6 +583,9 @@ int acquire(const Use &use, Graph &graph)
     graph.modes = std::move(modes);
     graph.acquired = true;
 
+    ALOGD("%p runs as session %llu", use.graph.get(),
+          (unsigned long long)graph.id);
+
     if (graph.modes[0] != ar_topology::FrontendMode::compress)
         return 0;
 
@@ -574,6 +750,13 @@ void deliver(std::shared_ptr<Graph> graph, ar_topology::Runtime *runtime)
             gsl_event_cb_params event{notice.module, notice.event,
                 uint32_t(notice.payload.size()),
                 notice.payload.empty() ? nullptr : notice.payload.data()};
+
+            if (notice.module == GSL_EVENT_SRC_MODULE_ID_GSL &&
+                notice.event != GSL_EVENT_ID_EOS)
+                ALOGV("%p event %#x", graph.get(), notice.event);
+            else
+                ALOGD("%p event %#x from module %#x, %zu bytes", graph.get(),
+                      notice.event, notice.module, notice.payload.size());
 
             callback(&event, client);
         }
@@ -909,6 +1092,9 @@ int lend(const Use &use, const Keys &added, const Keys &calibration)
     if (status && !graph.lender)
         graph.lent.clear();
 
+    ALOGD("%p routes %s through %p, status %d", &graph,
+          ar_topology::text(added).c_str(), handle, status);
+
     return status;
 }
 
@@ -936,6 +1122,11 @@ int borrow(const Use &use)
 
             int status = join(*use.runtime, *other, use.graph.get(), graph,
                               Keys(request));
+
+            ALOGD("%p routes %s through %p, status %d", other,
+                  ar_topology::text(other->lent).c_str(), use.graph.get(),
+                  status);
+
             if (status)
                 return status;
 
@@ -980,6 +1171,9 @@ int reclaim(ar_topology::Runtime &runtime, Graph &graph)
     if (owner)
         status = exchange(runtime, *owner, graph.lent, graph.replaced,
                           graph.replaced_calibration, graph.replaced_hardware);
+
+    ALOGD("%p stops routing %s, status %d", &graph,
+          ar_topology::text(graph.lent).c_str(), status);
 
     graph.lender = nullptr;
     graph.lent.clear();
@@ -1283,6 +1477,7 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
             status = graph.compress->start();
 
         graph.started = !status;
+        graph.flowing = false;
 
         return status;
     }
@@ -1404,6 +1599,8 @@ int transfer(Graph &graph, bool capture, gsl_buff *data, uint32_t *moved)
         if (!status)
             status = result(pcm_ioctl(pcm, SNDRV_PCM_IOCTL_START, nullptr));
 
+        ALOGW("%p capture PCM overran, restart status %d", &graph, status);
+
         if (status)
             return status;
 
@@ -1445,9 +1642,26 @@ int32_t move(gsl_handle_t handle, bool capture, gsl_buff *data, uint32_t *moved)
     if (!use.graph)
         return AR_EHANDLE;
 
-    std::lock_guard<std::mutex> lock(use.graph->mutex);
+    auto &graph = *use.graph;
+    std::lock_guard<std::mutex> lock(graph.mutex);
 
-    return code(transfer(*use.graph, capture, data, moved));
+    int status = transfer(graph, capture, data, moved);
+
+    if (status && status != -EAGAIN && status != graph.failure)
+        ALOGE("%p %s of %u bytes: %s", handle, capture ? "read" : "write",
+              data ? data->size : 0, strerror(-status));
+    else if (!status && (!graph.flowing || graph.failure))
+        ALOGD("%p %s %u bytes, data flows", handle,
+              capture ? "read" : "wrote", *moved);
+    else if (!status)
+        ALOGV("%p %s %u bytes", handle, capture ? "read" : "wrote", *moved);
+
+    if (status != -EAGAIN) {
+        graph.failure = status;
+        graph.flowing = !status;
+    }
+
+    return code(status);
 }
 
 }
@@ -1475,9 +1689,12 @@ int start(unsigned card, struct mixer *mixer,
 
         int status = pending->runtime->reset();
         if (status)
-            return status;
+            return LOG_ERRNO(status, "card %u: route controls do not reset: %s",
+                             card, strerror(-status));
 
         library = std::move(pending);
+
+        ALOGI("native GSL runs on card %u", card);
 
         return 0;
     } catch (const std::bad_alloc &) {
@@ -1507,9 +1724,9 @@ void stop()
 
 }
 
-extern "C" int32_t gsl_open(const struct gsl_key_vector *graph_key_vect,
-                            const struct gsl_key_vector *cal_key_vect,
-                            gsl_handle_t *graph_handle)
+static int32_t open_graph(const struct gsl_key_vector *graph_key_vect,
+                          const struct gsl_key_vector *cal_key_vect,
+                          gsl_handle_t *graph_handle)
 {
     if (!graph_key_vect || !graph_key_vect->num_kvps || !graph_handle)
         return AR_EBADPARAM;
@@ -1530,7 +1747,12 @@ extern "C" int32_t gsl_open(const struct gsl_key_vector *graph_key_vect,
         int status = resolve(*library->bindings, graph->requests, plan,
                              graph->passive);
         if (status)
-            return code(status);
+            return code(LOG_ERRNO(status, "the bindings have no selection %s",
+                ar_topology::text(graph->requests).c_str()));
+
+        if (graph->passive)
+            ALOGD("%s has no PCM and waits for a graph to route it",
+                  ar_topology::text(graph->requests).c_str());
 
         library->graphs.emplace(graph.get(), graph);
         *graph_handle = graph.get();
@@ -1541,7 +1763,7 @@ extern "C" int32_t gsl_open(const struct gsl_key_vector *graph_key_vect,
     }
 }
 
-extern "C" int32_t gsl_close(gsl_handle_t graph_handle)
+static int32_t close_graph(gsl_handle_t graph_handle)
 {
     std::lock_guard<std::mutex> commands(command_mutex);
     std::shared_ptr<Graph> graph;
@@ -1634,8 +1856,8 @@ extern "C" int32_t gsl_register_event_cb(gsl_handle_t graph_handle,
     return AR_EOK;
 }
 
-extern "C" int32_t gsl_ioctl(gsl_handle_t graph_handle, enum gsl_cmd_id cmd_id,
-                             void *cmd_payload, size_t cmd_payload_sz)
+static int32_t run_command(gsl_handle_t graph_handle, enum gsl_cmd_id cmd_id,
+                           void *cmd_payload, size_t cmd_payload_sz)
 {
     std::lock_guard<std::mutex> commands(command_mutex);
     auto use = find(graph_handle);
@@ -1653,9 +1875,9 @@ extern "C" int32_t gsl_ioctl(gsl_handle_t graph_handle, enum gsl_cmd_id cmd_id,
     }
 }
 
-extern "C" int32_t gsl_set_custom_config(gsl_handle_t graph_handle,
-                                         const uint8_t *payload,
-                                         const uint32_t payload_size)
+static int32_t set_parameters(gsl_handle_t graph_handle,
+                              const uint8_t *payload,
+                              const uint32_t payload_size)
 {
     if (!payload || !payload_size)
         return AR_EBADPARAM;
@@ -1701,8 +1923,8 @@ extern "C" int32_t gsl_set_custom_config(gsl_handle_t graph_handle,
     }
 }
 
-extern "C" int32_t gsl_get_custom_config(gsl_handle_t graph_handle,
-                                         uint8_t *payload, uint32_t size)
+static int32_t get_parameters(gsl_handle_t graph_handle,
+                              uint8_t *payload, uint32_t size)
 {
     if (!payload || !size)
         return AR_EBADPARAM;
@@ -1727,10 +1949,10 @@ extern "C" int32_t gsl_get_custom_config(gsl_handle_t graph_handle,
     return code(use.runtime->get_parameters(graph.id, payload, size));
 }
 
-extern "C" int32_t gsl_set_config(gsl_handle_t graph_handle,
-                                  const struct gsl_key_vector *graph_key_vect,
-                                  uint32_t tag,
-                                  const struct gsl_key_vector *tag_key_vect)
+static int32_t set_tagged(gsl_handle_t graph_handle,
+                          const struct gsl_key_vector *graph_key_vect,
+                          uint32_t tag,
+                          const struct gsl_key_vector *tag_key_vect)
 {
     std::lock_guard<std::mutex> commands(command_mutex);
     auto use = find(graph_handle);
@@ -1766,7 +1988,7 @@ extern "C" int32_t gsl_set_config(gsl_handle_t graph_handle,
     }
 }
 
-extern "C" int32_t gsl_set_cal(gsl_handle_t graph_handle,
+static int32_t set_calibration(gsl_handle_t graph_handle,
                                const struct gsl_key_vector *graph_key_vect,
                                const struct gsl_key_vector *cal_key_vect)
 {
@@ -1824,4 +2046,79 @@ extern "C" int32_t gsl_write(gsl_handle_t graph_handle, uint32_t,
                              struct gsl_buff *buff, uint32_t *consumed_size)
 {
     return move(graph_handle, false, buff, consumed_size);
+}
+
+extern "C" int32_t gsl_open(const struct gsl_key_vector *graph_key_vect,
+                            const struct gsl_key_vector *cal_key_vect,
+                            gsl_handle_t *graph_handle)
+{
+    int32_t status = open_graph(graph_key_vect, cal_key_vect, graph_handle);
+
+    return report(status, "open %s calibration %s as %p",
+                  ar_topology::text(keys(graph_key_vect)).c_str(),
+                  ar_topology::text(keys(cal_key_vect)).c_str(),
+                  status ? nullptr : *graph_handle);
+}
+
+extern "C" int32_t gsl_close(gsl_handle_t graph_handle)
+{
+    return report(close_graph(graph_handle), "%p close", graph_handle);
+}
+
+extern "C" int32_t gsl_ioctl(gsl_handle_t graph_handle, enum gsl_cmd_id cmd_id,
+                             void *cmd_payload, size_t cmd_payload_sz)
+{
+    std::string values = detail(cmd_id, cmd_payload, cmd_payload_sz);
+
+    return report(run_command(graph_handle, cmd_id, cmd_payload,
+                              cmd_payload_sz),
+                  "%p %s%s", graph_handle, name(cmd_id), values.c_str());
+}
+
+extern "C" int32_t gsl_set_custom_config(gsl_handle_t graph_handle,
+                                         const uint8_t *payload,
+                                         const uint32_t payload_size)
+{
+    uint32_t first[2] = {};
+
+    if (payload && payload_size >= sizeof(first))
+        std::memcpy(first, payload, sizeof(first));
+
+    return report(set_parameters(graph_handle, payload, payload_size),
+                  "%p set %u bytes of parameters from module %#x parameter %#x",
+                  graph_handle, payload_size, first[0], first[1]);
+}
+
+extern "C" int32_t gsl_get_custom_config(gsl_handle_t graph_handle,
+                                         uint8_t *payload, uint32_t size)
+{
+    uint32_t first[2] = {};
+
+    if (payload && size >= sizeof(first))
+        std::memcpy(first, payload, sizeof(first));
+
+    return report(get_parameters(graph_handle, payload, size),
+                  "%p get module %#x parameter %#x", graph_handle, first[0],
+                  first[1]);
+}
+
+extern "C" int32_t gsl_set_config(gsl_handle_t graph_handle,
+                                  const struct gsl_key_vector *graph_key_vect,
+                                  uint32_t tag,
+                                  const struct gsl_key_vector *tag_key_vect)
+{
+    return report(set_tagged(graph_handle, graph_key_vect, tag, tag_key_vect),
+                  "%p set tag %#x %s on %s", graph_handle, tag,
+                  ar_topology::text(keys(tag_key_vect)).c_str(),
+                  ar_topology::text(keys(graph_key_vect)).c_str());
+}
+
+extern "C" int32_t gsl_set_cal(gsl_handle_t graph_handle,
+                               const struct gsl_key_vector *graph_key_vect,
+                               const struct gsl_key_vector *cal_key_vect)
+{
+    return report(set_calibration(graph_handle, graph_key_vect, cal_key_vect),
+                  "%p set calibration %s on %s", graph_handle,
+                  ar_topology::text(keys(cal_key_vect)).c_str(),
+                  ar_topology::text(keys(graph_key_vect)).c_str());
 }

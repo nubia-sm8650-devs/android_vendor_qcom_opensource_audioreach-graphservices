@@ -1,4 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#define LOG_TAG "gsl-native"
+
+#include <ar_topology_log.h>
+
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -22,6 +26,16 @@ AcdbGraphKeyVector vector(const gsl_key_vector *keys)
     return value;
 }
 
+std::string text(const gsl_key_vector *keys)
+{
+    ar_topology::Keys value;
+
+    for (uint32_t i = 0; keys && i < keys->num_kvps; i++)
+        value.emplace_back(keys->kvp[i].key, keys->kvp[i].value);
+
+    return ar_topology::text(value);
+}
+
 int32_t subgraphs(const gsl_key_vector *keys, std::vector<uint32_t> &ids)
 {
     AcdbGraphKeyVector request = vector(keys);
@@ -29,6 +43,10 @@ int32_t subgraphs(const gsl_key_vector *keys, std::vector<uint32_t> &ids)
 
     int32_t status = acdb_ioctl(ACDB_CMD_GET_GRAPH, &request, sizeof(request),
                                 &reply, sizeof(reply));
+    if (status)
+        ALOGW("the ACDB has no graph for %s, status %d", text(keys).c_str(),
+              status);
+
     if (status || !reply.size)
         return status;
 
@@ -123,8 +141,12 @@ extern "C" int32_t gsl_get_tagged_module_info(
         if (status && status != AR_ENOTEXIST)
             return status;
 
-        if (!reply.num_tagged_mids)
+        if (!reply.num_tagged_mids) {
+            ALOGD("tag %#x has no module in %s", tag,
+                  text(graph_key_vect).c_str());
+
             return AR_ENOTEXIST;
+        }
 
         uint32_t size = sizeof(gsl_module_id_info) +
             reply.num_tagged_mids * sizeof(gsl_module_id_info_entry);
@@ -147,6 +169,10 @@ extern "C" int32_t gsl_get_tagged_module_info(
 
         *module_info = info;
         *module_info_size = size;
+
+        ALOGD("tag %#x is module %#x instance %#x in %s", tag,
+              info->module_entry[0].module_id, info->module_entry[0].module_iid,
+              text(graph_key_vect).c_str());
 
         return AR_EOK;
     } catch (const std::bad_alloc &) {

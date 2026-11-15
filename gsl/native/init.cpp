@@ -1,11 +1,16 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#define LOG_TAG "gsl-native"
+
 #include "gsl_native.h"
+
+#include <ar_topology_log.h>
 
 #include <ar_topology_startup.h>
 
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <new>
 #include <stdexcept>
 #include <system_error>
@@ -116,7 +121,7 @@ std::unique_ptr<Startup> startup;
 
 void exit_on_card_loss()
 {
-    fprintf(stderr, "gsl: the sound card is gone, exiting\n");
+    ALOGE("the sound card is gone, exiting");
     _exit(EXIT_FAILURE);
 }
 
@@ -152,10 +157,13 @@ int init(const gsl_init_data &data, const std::string &name,
 
         int status = ar_topology::load_bindings(path, bindings);
         if (status)
-            return status;
+            return LOG_ERRNO(status, "bindings %s: %s", path.c_str(),
+                             strerror(-status));
 
         unsigned card;
         auto deadline = std::chrono::steady_clock::now() + wait;
+
+        ALOGI("looking for sound card '%s'", name.c_str());
 
         for (;;) {
             status = ar_topology::find_card(name, card);
@@ -167,17 +175,21 @@ int init(const gsl_init_data &data, const std::string &name,
         }
 
         if (status)
-            return status;
+            return LOG_ERRNO(status, "sound card '%s': %s", name.c_str(),
+                             strerror(-status));
+
+        ALOGI("sound card '%s' is card %u", name.c_str(), card);
 
         if (acdb_init(reinterpret_cast<AcdbDataFiles *>(data.acdb_files),
                       reinterpret_cast<AcdbFile *>(data.acdb_delta_file)))
-            return -EIO;
+            return LOG_ERRNO(-EIO, "the ACDB files do not load");
 
         pending->acdb = true;
 
         pending->mixer = mixer_open(card);
         if (!pending->mixer)
-            return -ENODEV;
+            return LOG_ERRNO(-ENODEV, "the mixer of card %u does not open",
+                             card);
 
         status = start(card, pending->mixer, std::move(bindings));
         if (status)
@@ -188,7 +200,8 @@ int init(const gsl_init_data &data, const std::string &name,
         if (lost) {
             status = pending->watch.start(card, lost);
             if (status)
-                return status;
+                return LOG_ERRNO(status, "card %u cannot be watched: %s", card,
+                                 strerror(-status));
         }
 
         startup = std::move(pending);

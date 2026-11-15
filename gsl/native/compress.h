@@ -60,6 +60,7 @@ private:
     std::mutex mutex;
     bool drained = false;
     bool partial = false;
+    int refusal = 0;
 
     int watch(bool enable);
     int halt();

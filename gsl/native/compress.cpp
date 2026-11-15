@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#define LOG_TAG "gsl-native"
+
 #include "compress.h"
+
+#include <ar_topology_log.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -76,6 +80,9 @@ int CompressStream::halt()
     if (status == -EPERM)
         status = 0;
 
+    ALOGD("compress stop after %llu bytes, status %d",
+          (unsigned long long)written, status);
+
     if (drainer.joinable())
         drainer.join();
 
@@ -103,8 +110,17 @@ void CompressStream::kick()
     if (!started || running || draining)
         return;
 
-    if (!::ioctl(fd, SNDRV_COMPRESS_START))
+    if (!::ioctl(fd, SNDRV_COMPRESS_START)) {
         running = true;
+        ALOGD("compress started");
+
+        return;
+    }
+
+    if (errno != refusal)
+        ALOGE("compress start: %s", strerror(errno));
+
+    refusal = errno;
 }
 
 void CompressStream::release(uint64_t limit)
@@ -147,6 +163,9 @@ void CompressStream::harvest()
         while (::read(wake, &count, sizeof(count)) > 0) {
         }
 
+        ALOGD("compress drain done, %s", partial ? "next track follows" :
+                                                   "stream stopped");
+
         draining = false;
         running = partial;
         consumed = written;
@@ -185,11 +204,16 @@ int CompressStream::configure(const snd_compr_params &value)
 
     if (::ioctl(fd, SNDRV_COMPRESS_SET_METADATA, &metadata) ||
         ::ioctl(fd, SNDRV_COMPRESS_NEXT_TRACK))
-        return -errno;
+        return LOG_ERRNO(-errno, "compress next track signal: %s",
+                         strerror(errno));
 
     snd_compr_params copy = value;
     if (::ioctl(fd, SNDRV_COMPRESS_SET_PARAMS, &copy))
-        return -errno;
+        return LOG_ERRNO(-errno, "compress next track codec %u: %s",
+                         value.codec.id, strerror(errno));
+
+    ALOGD("compress next track is codec %u at %u Hz", value.codec.id,
+          value.codec.sample_rate);
 
     params = value;
 
@@ -200,7 +224,8 @@ int CompressStream::start()
 {
     if (capture) {
         if (!running && ::ioctl(fd, SNDRV_COMPRESS_START))
-            return -errno;
+            return LOG_ERRNO(-errno, "compress capture start: %s",
+                             strerror(errno));
 
         started = running = true;
 
@@ -270,6 +295,9 @@ int CompressStream::read(void *data, size_t size, size_t &count)
 int CompressStream::write(const void *data, size_t size, size_t &accepted)
 {
     ssize_t count = ::write(fd, data, size);
+    if (count < 0 && errno != EAGAIN)
+        ALOGE("compress write of %zu bytes: %s", size, strerror(errno));
+
     if (count < 0)
         return -errno;
 
@@ -297,6 +325,9 @@ int CompressStream::eos()
         return 0;
 
     bool next = !::ioctl(fd, SNDRV_COMPRESS_NEXT_TRACK);
+
+    ALOGD("compress %s drain after %llu bytes", next ? "partial" : "full",
+          (unsigned long long)written);
 
     int status = watch(false);
     if (status)
@@ -356,7 +387,14 @@ int CompressStream::silence(bool trailing, uint32_t frames)
                               SNDRV_COMPRESS_ENCODER_DELAY;
     metadata.value[0] = frames;
 
-    return ::ioctl(fd, SNDRV_COMPRESS_SET_METADATA, &metadata) ? -errno : 0;
+    if (::ioctl(fd, SNDRV_COMPRESS_SET_METADATA, &metadata))
+        return LOG_ERRNO(-errno, "compress %s of %u frames: %s",
+                         trailing ? "padding" : "delay", frames,
+                         strerror(errno));
+
+    ALOGD("compress %s is %u frames", trailing ? "padding" : "delay", frames);
+
+    return 0;
 }
 
 }
