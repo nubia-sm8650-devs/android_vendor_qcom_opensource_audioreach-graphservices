@@ -49,7 +49,18 @@ PCM.
   that contains the key vector of another graph, that graph runs it.
 - Stop and close with properties do nothing. The route runs until the
   client changes or removes the key vector.
-- `GSL_CMD_EOS` and `GSL_CMD_FLUSH` work on compressed graphs only.
+- A playback PCM keeps running when the client supplies no data, as a
+  graph on the DSP does. A capture PCM that stopped on an overrun restarts
+  on the next read.
+- `GSL_CMD_FLUSH` on a PCM graph drops the data of its PCMs and prepares
+  them again.
+- `GSL_CMD_EOS` works on compressed graphs only. When the drain completes
+  the client gets the EOS event and then the early EOS event of the gapless
+  module.
+- New compress parameters on a started graph are those of the next track.
+  The kernel takes them only while the compress device runs, so they fail
+  after a flush or a full drain.
+- A write with `GSL_BUFF_FLAG_MEDIA_FORMAT` is not supported.
 - The tuning and logging functions return `AR_EUNSUPPORTED`.
 
 ## Test
