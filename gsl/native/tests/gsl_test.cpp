@@ -195,6 +195,27 @@ static void configure(gsl_handle_t handle, bool capture)
                       &buffers, sizeof(buffers)));
 }
 
+static void restarts()
+{
+    auto controls = make_mixer();
+
+    assert(!gsl_native::start(0, &controls,
+        std::make_unique<ar_topology::Bindings>(fixture())));
+
+    auto playback = open_graph(1);
+
+    configure(playback, false);
+    assert(!gsl_ioctl(playback, GSL_CMD_PREPARE, nullptr, 0));
+
+    auto *pcm = opened(1);
+
+    assert(!gsl_ioctl(playback, GSL_CMD_START, nullptr, 0));
+    assert(pcm->state == SNDRV_PCM_STATE_RUNNING);
+
+    gsl_native::stop();
+    assert(open_pcms.empty());
+}
+
 static void parameters()
 {
     auto input = fixture();
@@ -1017,6 +1038,7 @@ static void startup()
 int main()
 {
     blocking_pcm();
+    restarts();
     parameters();
     hostless();
     mapped();

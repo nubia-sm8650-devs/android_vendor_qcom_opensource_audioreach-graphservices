@@ -196,7 +196,12 @@ int sample_format(const gsl_cmd_configure_pcm_media &media, pcm_format &format)
     return 0;
 }
 
-int map_on_command(struct pcm *pcm, const pcm_config &config, unsigned frames)
+/*
+ * The DSP keeps a graph running when the client supplies no data. A PCM does
+ * the same, and starts empty, only with its stop threshold at the boundary.
+ */
+int keep_running(struct pcm *pcm, const pcm_config &config, unsigned frames,
+                 bool mapped)
 {
     int type = SNDRV_PCM_TSTAMP_TYPE_MONOTONIC;
 
@@ -209,7 +214,7 @@ int map_on_command(struct pcm *pcm, const pcm_config &config, unsigned frames)
     software.tstamp_mode = SNDRV_PCM_TSTAMP_ENABLE;
     software.period_step = 1;
     software.avail_min = config.avail_min ? config.avail_min :
-                                            config.period_size;
+                         mapped ? config.period_size : 1;
     software.start_threshold = config.start_threshold;
     software.stop_threshold = config.stop_threshold ? config.stop_threshold :
                                                       frames;
@@ -241,8 +246,10 @@ int start_on_command(const std::vector<ar_topology::Pcm> &pcms,
 
         config.start_threshold = frames + 1;
 
-        if (pcms[i].flags & PCM_MMAP)
-            status = map_on_command(stream.handle, config, frames);
+        bool mapped = pcms[i].flags & PCM_MMAP;
+
+        if (mapped || !(pcms[i].flags & PCM_IN))
+            status = keep_running(stream.handle, config, frames, mapped);
         else
             status = result(pcm_set_sw_config(stream.handle, &config));
 

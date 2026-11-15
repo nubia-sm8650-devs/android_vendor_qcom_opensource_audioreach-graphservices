@@ -42,6 +42,7 @@ struct pcm {
     snd_pcm_uframes_t avail_min = 0;
     snd_pcm_uframes_t start_threshold = 0;
     snd_pcm_uframes_t moved = 0;
+    snd_pcm_uframes_t filled = 0;
 };
 
 struct mixer_ctl {
@@ -338,6 +339,7 @@ extern "C" int pcm_ioctl(struct pcm *handle, int request, ...)
         assert(handle->state != SNDRV_PCM_STATE_RUNNING);
         software.boundary = snd_pcm_uframes_t(handle->buffer_frames) << 20;
         handle->stop_threshold = software.stop_threshold;
+        handle->start_threshold = software.start_threshold;
         handle->avail_min = software.avail_min;
         return 0;
     }
@@ -367,6 +369,7 @@ extern "C" int pcm_ioctl(struct pcm *handle, int request, ...)
 
         assert(capture == bool(handle->flags & PCM_IN));
         handle->moved += transfer.frames;
+        handle->filled += transfer.frames;
         transfer.result = transfer.frames;
         return 0;
     }
@@ -386,6 +389,8 @@ extern "C" int pcm_set_sw_config(struct pcm *handle,
                                   const struct pcm_config *config)
 {
     handle->start_threshold = config->start_threshold;
+    handle->stop_threshold = config->stop_threshold ? config->stop_threshold :
+        handle->buffer_frames * (handle->flags & PCM_IN ? 10 : 1);
     return 0;
 }
 
@@ -412,6 +417,7 @@ extern "C" int pcm_prepare(struct pcm *handle)
         return -EPIPE;
 
     handle->state = SNDRV_PCM_STATE_PREPARED;
+    handle->filled = 0;
     prepared = true;
     return 0;
 }
@@ -422,6 +428,14 @@ extern "C" int pcm_start(struct pcm *handle)
     if (int(handle->id) == rejected_start)
         return -EIO;
 
+    if (!(handle->flags & PCM_IN) && !handle->filled &&
+        handle->stop_threshold &&
+        handle->stop_threshold <
+            snd_pcm_uframes_t(handle->buffer_frames) << 20) {
+        errno = EPIPE;
+        return -1;
+    }
+
     handle->state = SNDRV_PCM_STATE_RUNNING;
     return 0;
 }
@@ -430,6 +444,7 @@ extern "C" int pcm_stop(struct pcm *handle)
 {
     assert(handle != &bad_pcm);
     handle->state = SNDRV_PCM_STATE_SETUP;
+    handle->filled = 0;
     if (int(handle->id) == rejected_stop)
         return -EIO;
 
