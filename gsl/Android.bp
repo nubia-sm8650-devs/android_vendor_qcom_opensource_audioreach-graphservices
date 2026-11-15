@@ -137,6 +137,7 @@ cc_test_host {
         "hardware/qcom-caf/sm8650/audio/graphservices/spf/api",
         "hardware/qcom-caf/sm8650/audio/graphservices/spf/api/apm",
         "hardware/qcom-caf/sm8650/audio/graphservices/spf/api/ar_utils",
+        "hardware/qcom-caf/sm8650/audio/graphservices/spf/api/modules",
         "external/tinyalsa/include",
         "bionic/libc/kernel/uapi",
     ],

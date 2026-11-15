@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 #include <apm_api.h>
+#include <common_enc_dec_api.h>
 #include <ar_osal_error.h>
 #include <gsl_intf.h>
 #include <poll.h>
@@ -1072,6 +1073,26 @@ int select(const Use &use, gsl_cmd_id id, const void *payload, size_t size)
     return route(use, std::move(requests), std::move(calibration));
 }
 
+bool silence(const uint8_t *payload, uint32_t size, bool &trailing,
+             uint32_t &frames)
+{
+    apm_module_param_data_t header;
+
+    if (size < sizeof(header) + sizeof(frames))
+        return false;
+
+    std::memcpy(&header, payload, sizeof(header));
+
+    if (header.param_id != PARAM_ID_REMOVE_INITIAL_SILENCE &&
+        header.param_id != PARAM_ID_REMOVE_TRAILING_SILENCE)
+        return false;
+
+    trailing = header.param_id == PARAM_ID_REMOVE_TRAILING_SILENCE;
+    std::memcpy(&frames, payload + sizeof(header), sizeof(frames));
+
+    return true;
+}
+
 int buffer(Buffer &value, const void *payload, size_t size)
 {
     if (!payload || size != sizeof(gsl_cmd_configure_read_write_params))
@@ -1598,6 +1619,12 @@ extern "C" int32_t gsl_set_custom_config(gsl_handle_t graph_handle,
 
     auto &graph = *use.graph;
     std::lock_guard<std::mutex> lock(graph.mutex);
+
+    bool trailing;
+    uint32_t frames;
+
+    if (graph.compress && silence(payload, payload_size, trailing, frames))
+        return code(graph.compress->silence(trailing, frames));
 
     Graph *owner = lender(graph);
 

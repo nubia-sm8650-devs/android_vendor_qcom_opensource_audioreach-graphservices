@@ -74,6 +74,7 @@ static int control_fd = -1;
 static int compress_fd = -1;
 static int compress_peer = -1;
 static uint32_t compress_copied;
+static snd_compr_metadata compress_metadata{};
 static std::string compress_path;
 static int compress_access;
 static snd_compr_params compress_params{};
@@ -151,6 +152,11 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
         if (command == SNDRV_COMPRESS_TSTAMP) {
             static_cast<snd_compr_tstamp *>(data)->copied_total =
                 compress_copied;
+            return 0;
+        }
+
+        if (command == SNDRV_COMPRESS_SET_METADATA) {
+            compress_metadata = *static_cast<snd_compr_metadata *>(data);
             return 0;
         }
 

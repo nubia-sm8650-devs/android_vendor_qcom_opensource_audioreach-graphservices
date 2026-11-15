@@ -782,6 +782,22 @@ static void compressed()
     assert(compress_path == "/dev/snd/comprC0D2" && open_pcms.empty());
     assert(compress_params.codec.id == SND_AUDIOCODEC_MP3 &&
            compress_params.buffer.fragment_size == 1024);
+    uint32_t trim[] = {0x4002, 0x0800115d, 4, 0, 576, 0};
+
+    assert(!gsl_set_custom_config(handle,
+        reinterpret_cast<uint8_t *>(trim), sizeof(trim)));
+    assert(compress_metadata.key == SNDRV_COMPRESS_ENCODER_PADDING &&
+           compress_metadata.value[0] == 576);
+    trim[1] = 0x0800114b;
+    trim[4] = 1105;
+    assert(!gsl_set_custom_config(handle,
+        reinterpret_cast<uint8_t *>(trim), sizeof(trim)));
+    assert(compress_metadata.key == SNDRV_COMPRESS_ENCODER_DELAY &&
+           compress_metadata.value[0] == 1105);
+    assert(controls.controls.at("set2").bytes.empty() ||
+           std::memcmp(controls.controls.at("set2").bytes.data() + 8, trim,
+                       8));
+
     assert(!issued(SNDRV_COMPRESS_START));
     assert(!gsl_ioctl(handle, GSL_CMD_START, nullptr, 0));
     assert(issued(SNDRV_COMPRESS_START));
