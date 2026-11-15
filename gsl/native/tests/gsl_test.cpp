@@ -772,6 +772,15 @@ static void events()
     usleep(50000);
     assert(received.count == 1);
 
+    queued_events = 2;
+    assert(write(notification_ends[0].second, &notification,
+                 sizeof(notification)) == sizeof(notification));
+
+    for (int i = 0; i < 500 && received.count < 3; i++)
+        usleep(10000);
+
+    assert(received.count == 3);
+
     assert(!gsl_close(handle));
     close(notification_ends[0].second);
     notification_ends.clear();

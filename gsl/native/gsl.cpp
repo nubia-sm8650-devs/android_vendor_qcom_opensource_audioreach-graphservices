@@ -498,30 +498,39 @@ void collect(Graph &graph, ar_topology::Runtime &runtime, bool notified,
         ar_topology::consume_pcm_notifications(graph.notifications))
         return;
 
-    std::vector<uint8_t> data;
-    int status = -EAGAIN;
+    /*
+     * The kernel merges the notifications of events that it queues before
+     * the client reads the first one, so read until the queues are empty.
+     */
+    for (;;) {
+        std::vector<uint8_t> data;
+        int status = -EAGAIN;
 
-    for (size_t i = 0; i < graph.configs.size(); i++) {
-        uint32_t pcm = graph.configs[graph.next_pcm].id;
+        for (size_t i = 0; i < graph.configs.size(); i++) {
+            uint32_t pcm = graph.configs[graph.next_pcm].id;
 
-        graph.next_pcm = (graph.next_pcm + 1) % graph.configs.size();
+            graph.next_pcm = (graph.next_pcm + 1) % graph.configs.size();
 
-        status = runtime.read_event(graph.id, pcm, data);
-        if (status != -EAGAIN)
-            break;
+            status = runtime.read_event(graph.id, pcm, data);
+            if (status != -EAGAIN)
+                break;
+        }
+
+        if (status == -EOVERFLOW)
+            continue;
+
+        uint32_t header[3];
+
+        if (status || data.size() < sizeof(header))
+            return;
+
+        std::memcpy(header, data.data(), sizeof(header));
+        if (header[2] != data.size() - sizeof(header))
+            return;
+
+        notices.push_back({header[0], header[1],
+                           {data.begin() + sizeof(header), data.end()}});
     }
-
-    uint32_t header[3];
-
-    if (status || data.size() < sizeof(header))
-        return;
-
-    std::memcpy(header, data.data(), sizeof(header));
-    if (header[2] != data.size() - sizeof(header))
-        return;
-
-    notices.push_back({header[0], header[1],
-                       {data.begin() + sizeof(header), data.end()}});
 }
 
 void deliver(std::shared_ptr<Graph> graph, ar_topology::Runtime *runtime)
