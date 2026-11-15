@@ -63,6 +63,27 @@ PCM.
 - A write with `GSL_BUFF_FLAG_MEDIA_FORMAT` is not supported.
 - The tuning and logging functions return `AR_EUNSUPPORTED`.
 
+## Debugging
+
+The library logs under the tag `gsl-native` and the runtime under
+`ar-topology`.
+
+    adb logcat -s gsl-native ar-topology
+
+`gsl-native` prints one line for each call of the interface, with the
+handle, the key vectors, the values of the command and the result.
+`ar-topology` prints what the call does on the sound card, which is each
+control write, each PCM and compress device that opens, prepares and
+starts, and each parameter and calibration write. Where a request is
+refused, it prints the control, PCM, module or format that caused it.
+
+The lines for each buffer and each parameter record are verbose. They need
+a build with `-DLOG_NDEBUG=0`.
+
+The kernel drivers print their side when dynamic debug enables it.
+
+    echo 'file sound/soc/qcom/* +p' > /proc/dynamic_debug/control
+
 ## Test
 
 `ar-gsl-native-test` runs the library against a fake sound card.
