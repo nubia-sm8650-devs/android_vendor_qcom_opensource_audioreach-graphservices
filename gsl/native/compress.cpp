@@ -152,6 +152,7 @@ void CompressStream::harvest()
         consumed = written;
         release(written);
         events.push_back(Event::eos);
+        events.push_back(Event::early_eos);
 
         snd_compr_tstamp position{};
         if (!::ioctl(fd, SNDRV_COMPRESS_TSTAMP, &position))

@@ -14,7 +14,7 @@ namespace gsl_native
 
 class CompressStream {
 public:
-    enum class Event { write_done, eos };
+    enum class Event { write_done, eos, early_eos };
 
     CompressStream(int fd, const snd_compr_params &params, bool capture);
     ~CompressStream();

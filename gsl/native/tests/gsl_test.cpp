@@ -733,8 +733,17 @@ static void count(gsl_event_cb_params *event, void *client)
 {
     auto &counts = *static_cast<std::atomic<int> *>(client);
 
-    assert(event->source_module_id == GSL_EVENT_SRC_MODULE_ID_GSL);
     assert(!event->event_payload_size);
+
+    if (event->event_id == 0x08001126) {
+        assert(event->source_module_id != GSL_EVENT_SRC_MODULE_ID_GSL);
+        assert(counts >= 100);
+        counts += 10000;
+
+        return;
+    }
+
+    assert(event->source_module_id == GSL_EVENT_SRC_MODULE_ID_GSL);
 
     if (event->event_id == GSL_EVENT_ID_WRITE_DONE)
         counts += 1;
@@ -817,10 +826,10 @@ static void compressed()
 
     assert(!gsl_ioctl(handle, GSL_CMD_EOS, nullptr, 0));
 
-    for (int i = 0; i < 500 && counts < 102; i++)
+    for (int i = 0; i < 500 && counts < 10102; i++)
         usleep(10000);
 
-    assert(counts == 102 && issued(SNDRV_COMPRESS_PARTIAL_DRAIN));
+    assert(counts == 10102 && issued(SNDRV_COMPRESS_PARTIAL_DRAIN));
 
     compress_commands.clear();
     assert(!gsl_ioctl(handle, GSL_CMD_FLUSH, nullptr, 0));

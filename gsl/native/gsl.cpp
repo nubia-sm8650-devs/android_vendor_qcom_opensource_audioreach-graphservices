@@ -23,6 +23,7 @@
 #include <vector>
 #include <apm_api.h>
 #include <common_enc_dec_api.h>
+#include <gapless_api.h>
 #include <ar_osal_error.h>
 #include <gsl_intf.h>
 #include <poll.h>
@@ -473,11 +474,15 @@ void collect(Graph &graph, ar_topology::Runtime &runtime, bool notified,
         gsl_native::CompressStream::Event event;
 
         while (!graph.compress->next_event(event)) {
-            bool eos = event == gsl_native::CompressStream::Event::eos;
+            using Event = gsl_native::CompressStream::Event;
 
-            notices.push_back({GSL_EVENT_SRC_MODULE_ID_GSL,
-                uint32_t(eos ? GSL_EVENT_ID_EOS : GSL_EVENT_ID_WRITE_DONE),
-                {}});
+            if (event == Event::early_eos)
+                notices.push_back({MODULE_ID_GAPLESS, EVENT_ID_EARLY_EOS, {}});
+            else
+                notices.push_back({GSL_EVENT_SRC_MODULE_ID_GSL,
+                    uint32_t(event == Event::eos ? GSL_EVENT_ID_EOS :
+                                                   GSL_EVENT_ID_WRITE_DONE),
+                    {}});
         }
     }
 
