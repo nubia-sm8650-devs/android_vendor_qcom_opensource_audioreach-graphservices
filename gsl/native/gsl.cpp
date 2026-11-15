@@ -1387,7 +1387,18 @@ int transfer(Graph &graph, bool capture, gsl_buff *data, uint32_t *moved)
 
         break;
     case SNDRV_PCM_STATE_XRUN:
-        return -EPIPE;
+        if (!capture)
+            return -EPIPE;
+
+        status = result(pcm_prepare(pcm));
+
+        if (!status)
+            status = result(pcm_ioctl(pcm, SNDRV_PCM_IOCTL_START, nullptr));
+
+        if (status)
+            return status;
+
+        break;
     case SNDRV_PCM_STATE_DISCONNECTED:
         return -ENODEV;
     default:

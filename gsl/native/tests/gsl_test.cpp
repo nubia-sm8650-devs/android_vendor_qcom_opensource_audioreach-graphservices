@@ -230,6 +230,18 @@ static void restarts()
     assert(!gsl_ioctl(playback, GSL_CMD_FLUSH, nullptr, 0));
     assert(pcm->state == SNDRV_PCM_STATE_PREPARED);
 
+    auto capture = open_graph(4);
+
+    configure(capture, true);
+    assert(!gsl_ioctl(capture, GSL_CMD_PREPARE, nullptr, 0));
+    assert(!gsl_ioctl(capture, GSL_CMD_START, nullptr, 0));
+
+    auto *input = opened(4);
+
+    input->state = SNDRV_PCM_STATE_XRUN;
+    assert(!gsl_read(capture, 0, &buffer, &moved) && moved == 960);
+    assert(input->state == SNDRV_PCM_STATE_RUNNING && input->moved == 240);
+
     gsl_native::stop();
     assert(open_pcms.empty());
 }
