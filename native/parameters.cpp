@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#define LOG_TAG "ar-topology"
+
 #include "ar_topology_parameters.h"
+#include "ar_topology_log.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -73,13 +76,21 @@ int records(const Plan &plan, const void *data, size_t size, size_t applied,
         } else {
             auto owner = plan.modules.find(header[0]);
             if (owner == plan.modules.end())
-                return header[0] == 3 ? -EOPNOTSUPP : -ENOENT;
+                return LOG_ERRNO(header[0] == 3 ? -EOPNOTSUPP : -ENOENT,
+                                 "parameter %#x for module %#x, which no "
+                                 "graph of the session has", header[1],
+                                 header[0]);
 
             graph = owner->second;
         }
 
         if (scope && !scope->count(graph))
-            return -ENOENT;
+            return LOG_ERRNO(-ENOENT, "parameter %#x for module %#x of graph "
+                             "%#x, outside the selection", header[1],
+                             header[0], graph);
+
+        ALOGV("graph %#x module %#x parameter %#x, %u bytes", graph,
+              header[0], header[1], header[2]);
 
         size_t end = offset + sizeof(header) + payload;
         if (offset < applied && applied < end)
@@ -129,6 +140,7 @@ int Parameters::set(const void *data, size_t size, size_t *applied) const
             struct mixer_ctl *control;
             std::vector<uint8_t> bytes;
             size_t end;
+            uint32_t graph;
         };
         std::vector<Pending> pending;
 
@@ -137,7 +149,8 @@ int Parameters::set(const void *data, size_t size, size_t *applied) const
             auto *control = mixer_get_ctl_by_name(mixer,
                                                    graph.set_control.c_str());
             if (!control)
-                return -ENOENT;
+                return LOG_ERRNO(-ENOENT, "control '%s' is missing",
+                                 graph.set_control.c_str());
 
             if (mixer_ctl_get_type(control) != MIXER_CTL_TYPE_BYTE ||
                 !mixer_ctl_is_access_tlv_rw(control))
@@ -146,7 +159,8 @@ int Parameters::set(const void *data, size_t size, size_t *applied) const
             uint32_t header[] = {SND_SOC_AR_TLV_SET_PARAMS,
                                  uint32_t(run.end - run.begin)};
             Pending value{control, std::vector<uint8_t>(sizeof(header) +
-                                                        header[1]), run.end};
+                                                        header[1]), run.end,
+                          run.graph};
             std::memcpy(value.bytes.data(), header, sizeof(header));
             std::memcpy(value.bytes.data() + sizeof(header),
                          static_cast<const uint8_t *>(data) + run.begin,
@@ -155,10 +169,24 @@ int Parameters::set(const void *data, size_t size, size_t *applied) const
         }
 
         for (const auto &value : pending) {
+            uint32_t first[2];
+
+            std::memcpy(first, value.bytes.data() + 8, sizeof(first));
+
             int status = mixer_ctl_set_array(value.control, value.bytes.data(),
                                               value.bytes.size());
-            if (status)
-                return status == -1 ? -errno : status;
+            if (status) {
+                status = status == -1 ? -errno : status;
+
+                return LOG_ERRNO(status, "graph %#x: %zu bytes of parameters "
+                                 "from module %#x parameter %#x: %s",
+                                 value.graph, value.bytes.size() - 8, first[0],
+                                 first[1], strerror(-status));
+            }
+
+            ALOGD("graph %#x: %zu bytes of parameters from module %#x "
+                  "parameter %#x", value.graph, value.bytes.size() - 8,
+                  first[0], first[1]);
 
             if (applied)
                 *applied = value.end;
@@ -191,18 +219,20 @@ int Parameters::get(void *data, size_t size) const
     } else {
         auto owner = plan.modules.find(header[0]);
         if (owner == plan.modules.end())
-            return -ENOENT;
+            return LOG_ERRNO(-ENOENT, "query of parameter %#x of module %#x, "
+                             "which no graph of the session has", header[1],
+                             header[0]);
 
         graph = owner->second;
     }
 
     const auto &name = plan.graphs.at(graph).get_control;
     if (name.empty())
-        return -EOPNOTSUPP;
+        return LOG_ERRNO(-EOPNOTSUPP, "graph %#x has no query control", graph);
 
     auto *control = mixer_get_ctl_by_name(mixer, name.c_str());
     if (!control)
-        return -ENOENT;
+        return LOG_ERRNO(-ENOENT, "control '%s' is missing", name.c_str());
 
     if (mixer_ctl_get_type(control) != MIXER_CTL_TYPE_BYTE ||
         !mixer_ctl_is_access_tlv_rw(control))
@@ -218,12 +248,16 @@ int Parameters::get(void *data, size_t size) const
                     sizeof(header) + header[2]);
 
         int status = mixer_ctl_set_array(control, bytes.data(), bytes.size());
-        if (status)
-            return status == -1 ? -errno : status;
 
-        status = mixer_ctl_get_array(control, bytes.data(), bytes.size());
-        if (status)
-            return status == -1 ? -errno : status;
+        if (!status)
+            status = mixer_ctl_get_array(control, bytes.data(), bytes.size());
+
+        if (status) {
+            status = status == -1 ? -errno : status;
+
+            return LOG_ERRNO(status, "query of module %#x parameter %#x: %s",
+                             header[0], header[1], strerror(-status));
+        }
 
         uint32_t reply[4];
 
@@ -238,7 +272,11 @@ int Parameters::get(void *data, size_t size) const
             return -EPROTO;
 
         if (reply[3])
-            return -EIO;
+            return LOG_ERRNO(-EIO, "query of module %#x parameter %#x: DSP "
+                             "error %#x", header[0], header[1], reply[3]);
+
+        ALOGD("module %#x parameter %#x: %u bytes", header[0], header[1],
+              reply[2]);
 
         std::memcpy(data, bytes.data() + sizeof(tlv),
                     std::min(size, sizeof(reply) + reply[2]));
@@ -298,8 +336,12 @@ int Parameters::resolve_tag(const Keys &gkv, uint32_t tag, const Keys &tkv,
         AcdbBlob response{};
         int status = acdb_error(acdb_ioctl(ACDB_CMD_GET_MODULE_TAG_DATA,
             &request, sizeof(request), &response, sizeof(response)));
-        if (status)
+        if (status) {
+            ALOGD("tag %#x %s on %s: no data in the ACDB (%d)", tag,
+                  text(tkv).c_str(), text(gkv).c_str(), status);
+
             return status;
+        }
 
         if (response.buf_size >
             uint32_t(std::numeric_limits<int32_t>::max()) - 8)

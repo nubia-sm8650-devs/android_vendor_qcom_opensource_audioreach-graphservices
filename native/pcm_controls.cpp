@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#define LOG_TAG "ar-topology"
+
 #include "ar_topology_pcm_controls.h"
+#include "ar_topology_log.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -35,7 +38,7 @@ struct Control {
         std::snprintf(path, sizeof(path), "/dev/snd/controlC%u", card);
         fd = ::open(path, O_RDWR | O_CLOEXEC | (nonblock ? O_NONBLOCK : 0));
         if (fd < 0)
-            return -errno;
+            return LOG_ERRNO(-errno, "open %s: %s", path, strerror(errno));
 
         info.id.iface = SNDRV_CTL_ELEM_IFACE_PCM;
         info.id.device = pcm;
@@ -44,11 +47,14 @@ struct Control {
             capture ? "Capture" : "Playback");
 
         if (ioctl(fd, SNDRV_CTL_IOCTL_ELEM_INFO, &info) < 0)
-            return -errno;
+            return LOG_ERRNO(-errno, "PCM %u control '%s': %s", pcm,
+                             info.id.name, strerror(errno));
 
         if (info.type != SNDRV_CTL_ELEM_TYPE_BYTES ||
             !(info.access & access))
-            return -EINVAL;
+            return LOG_ERRNO(-EINVAL, "PCM %u control '%s' has type %d, "
+                             "access %#x", pcm, info.id.name, info.type,
+                             info.access);
 
         return 0;
     }
@@ -92,7 +98,14 @@ int register_pcm_events(unsigned card, uint32_t pcm, bool capture,
         words[1] = size;
         std::memcpy(words.data() + 2, data, size);
 
-        return control.transfer(SNDRV_CTL_IOCTL_TLV_WRITE, words);
+        status = control.transfer(SNDRV_CTL_IOCTL_TLV_WRITE, words);
+        if (status)
+            return LOG_ERRNO(status, "PCM %u event registration of %zu "
+                             "bytes: %s", pcm, size, strerror(-status));
+
+        ALOGD("PCM %u: registered %zu bytes of events", pcm, size);
+
+        return 0;
     } catch (const std::bad_alloc &) {
         return -ENOMEM;
     }
@@ -115,8 +128,12 @@ int read_pcm_event(unsigned card, uint32_t pcm, bool capture,
         std::vector<uint8_t> output(capacity);
         std::vector<uint32_t> words(2 + (capacity + 3) / 4);
         status = control.transfer(SNDRV_CTL_IOCTL_TLV_READ, words);
-        if (status)
+        if (status == -EAGAIN)
             return status;
+
+        if (status)
+            return LOG_ERRNO(status, "PCM %u event read: %s", pcm,
+                             strerror(-status));
 
         if (words[0] != APM_EVENT_MODULE_TO_CLIENT || words[1] > capacity)
             return -EPROTO;

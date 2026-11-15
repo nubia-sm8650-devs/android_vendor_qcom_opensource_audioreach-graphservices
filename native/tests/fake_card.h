@@ -56,6 +56,7 @@ struct mixer_ctl {
     uint32_t reply_error = 0;
     std::vector<std::string> enums{};
     std::vector<long> integers{};
+    const char *name = "";
 };
 
 struct mixer {
@@ -487,7 +488,22 @@ extern "C" struct mixer_ctl *mixer_get_ctl_by_name(struct mixer *handle,
                                                   const char *name)
 {
     auto found = handle->controls.find(name);
-    return found == handle->controls.end() ? nullptr : &found->second;
+    if (found == handle->controls.end())
+        return nullptr;
+
+    found->second.name = found->first.c_str();
+
+    return &found->second;
+}
+
+extern "C" const char *mixer_ctl_get_name(struct mixer_ctl *control)
+{
+    return control->name;
+}
+
+extern "C" const char *pcm_get_error(struct pcm *)
+{
+    return "";
 }
 
 extern "C" enum mixer_ctl_type mixer_ctl_get_type(struct mixer_ctl *control)

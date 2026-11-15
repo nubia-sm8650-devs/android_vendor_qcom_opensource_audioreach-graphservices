@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#define LOG_TAG "ar-topology"
+
 #include "ar_topology.h"
+#include "ar_topology_log.h"
 
 #include <cerrno>
 #include <cstring>
@@ -88,7 +91,8 @@ int tune(struct mixer *mixer, const std::vector<Calibration> &calibrations)
             auto *control = mixer_get_ctl_by_name(mixer,
                                                   graph.set_control.c_str());
             if (!control)
-                return -ENOENT;
+                return LOG_ERRNO(-ENOENT, "control '%s' is missing",
+                                 graph.set_control.c_str());
 
             if (mixer_ctl_get_type(control) != MIXER_CTL_TYPE_BYTE ||
                 !mixer_ctl_is_access_tlv_rw(control))
@@ -97,7 +101,13 @@ int tune(struct mixer *mixer, const std::vector<Calibration> &calibrations)
             std::vector<uint8_t> data;
             int status = read_calibration(graph.subgraph, prior, next, data);
             if (status)
-                return status;
+                return LOG_ERRNO(status, "subgraph %#x calibration %s: %s",
+                                 graph.subgraph, text(next).c_str(),
+                                 strerror(-status));
+
+            ALOGD("subgraph %#x calibration %s: %zu bytes to '%s'",
+                  graph.subgraph, text(next).c_str(), data.size(),
+                  graph.set_control.c_str());
 
             if (data.empty())
                 continue;
@@ -115,8 +125,12 @@ int tune(struct mixer *mixer, const std::vector<Calibration> &calibrations)
         for (const auto &value : pending) {
             int status = mixer_ctl_set_array(value.control, value.bytes.data(),
                                              value.bytes.size());
-            if (status)
-                return status == -1 ? -errno : status;
+            if (status) {
+                status = status == -1 ? -errno : status;
+
+                return LOG_ERRNO(status, "%zu bytes of calibration: %s",
+                                 value.bytes.size() - 8, strerror(-status));
+            }
         }
 
         return 0;

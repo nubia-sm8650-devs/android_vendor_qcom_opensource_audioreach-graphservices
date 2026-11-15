@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#define LOG_TAG "ar-topology"
+
 #include "ar_topology_runtime.h"
+#include "ar_topology_log.h"
 #include "ar_topology_pcm_controls.h"
 #include "media.h"
 
@@ -38,8 +41,52 @@ int open_compress(unsigned card, uint32_t device, bool capture)
     snprintf(path, sizeof(path), "/dev/snd/comprC%uD%u", card, device);
 
     int fd = ::open(path, (capture ? O_RDONLY : O_WRONLY) | O_CLOEXEC);
+    if (fd < 0)
+        return LOG_ERRNO(-errno, "open %s: %s", path, strerror(errno));
 
-    return fd < 0 ? -errno : fd;
+    ALOGD("opened %s", path);
+
+    return fd;
+}
+
+int write_control(struct mixer_ctl *control, int value)
+{
+    const char *name = mixer_ctl_get_name(control);
+    const char *item = mixer_ctl_get_type(control) == MIXER_CTL_TYPE_ENUM ?
+        mixer_ctl_get_enum_string(control, value) : nullptr;
+    int status = result(mixer_ctl_set_value(control, 0, value));
+
+    if (status < 0)
+        return LOG_ERRNO(status, "control '%s' = %s: %s", name,
+                         item ? item : std::to_string(value).c_str(),
+                         strerror(-status));
+
+    ALOGD("control '%s' = %s", name,
+          item ? item : std::to_string(value).c_str());
+
+    return status;
+}
+
+std::string summary(const Plan &plan)
+{
+    std::string value;
+
+    for (const auto &frontend : plan.frontends) {
+        char entry[64];
+
+        snprintf(entry, sizeof(entry), " PCM %u %s graph %#x", frontend.pcm_id,
+                 frontend.capture ? "capture" : "playback", frontend.graph_id);
+        value += entry;
+    }
+
+    value += ", " + std::to_string(plan.graphs.size()) + " graphs, backends";
+
+    for (const auto &[name, backend] : plan.backends) {
+        (void)backend;
+        value += " " + name;
+    }
+
+    return value;
 }
 
 int state(const Stream &stream)
@@ -166,7 +213,7 @@ struct Runtime::Impl {
         while (session.acquired) {
             auto &control = *session.controls[session.acquired - 1];
             if (control.users == 1) {
-                int status = result(mixer_ctl_set_value(control.handle, 0, 0));
+                int status = write_control(control.handle, 0);
                 if (status < 0 && !first)
                     first = status;
             }
@@ -199,7 +246,10 @@ struct Runtime::Impl {
         session.managed_media = hardware != nullptr;
         if (hardware && session.plan.backends.size() !=
                         session.plan.hardware.size())
-            return -EOPNOTSUPP;
+            return LOG_ERRNO(-EOPNOTSUPP,
+                             "%zu backends but %zu hardware controls",
+                             session.plan.backends.size(),
+                             session.plan.hardware.size());
 
         if (hardware) {
             for (const auto &config : *hardware) {
@@ -207,12 +257,13 @@ struct Runtime::Impl {
                 std::sort(keys.begin(), keys.end());
                 auto selected = session.plan.selections.find(keys);
                 if (selected == session.plan.selections.end())
-                    return -ENOENT;
+                    return LOG_ERRNO(-ENOENT, "backend format for %s, which "
+                                     "the session does not select",
+                                     text(keys).c_str());
 
                 std::set<BackendId> matched;
 
                 for (const auto &[name, backend] : session.plan.backends) {
-                    (void)name;
                     if (!selected->second.count(backend.graph))
                         continue;
 
@@ -222,22 +273,29 @@ struct Runtime::Impl {
 
                     matched.insert(backend.id);
                     if (matched.size() > 1)
-                        return -EOPNOTSUPP;
+                        return LOG_ERRNO(-EOPNOTSUPP,
+                                         "backend format for %s matches "
+                                         "several backends",
+                                         text(keys).c_str());
 
                     auto [prior, added] = session.media.emplace(backend.id,
                                                                 config.media);
                     if (!added && !(prior->second == config.media))
-                        return -EBUSY;
+                        return LOG_ERRNO(-EBUSY,
+                                         "two formats for backend %s",
+                                         name.c_str());
                 }
 
                 if (matched.empty())
-                    return -EINVAL;
+                    return LOG_ERRNO(-EINVAL,
+                                     "backend format for %s matches no backend",
+                                     text(keys).c_str());
             }
 
             for (const auto &[name, backend] : session.plan.backends) {
-                (void)name;
                 if (!session.media.count(backend.id))
-                    return -EINVAL;
+                    return LOG_ERRNO(-EINVAL, "backend %s has no format",
+                                     name.c_str());
             }
         }
 
@@ -278,7 +336,14 @@ struct Runtime::Impl {
 
                 if (requested != session.media.end() &&
                     !(requested->second == media))
-                    return -EBUSY;
+                    return LOG_ERRNO(-EBUSY, "backend %s %u runs at %u Hz, %u "
+                                     "channels, %s, wanted %u Hz, %u "
+                                     "channels, %s", port.first.c_str(),
+                                     port.second, media.rate, media.channels,
+                                     media.format.c_str(),
+                                     requested->second.rate,
+                                     requested->second.channels,
+                                     requested->second.format.c_str());
 
                 auto map = session.channel_maps.find(port);
                 auto previous = prior.channel_maps.find(port);
@@ -416,11 +481,12 @@ struct Runtime::Impl {
     {
         auto *handle = mixer_get_ctl_by_name(mixer, name.c_str());
         if (!handle)
-            return -ENOENT;
+            return LOG_ERRNO(-ENOENT, "control '%s' is missing", name.c_str());
 
         if (mixer_ctl_get_type(handle) != MIXER_CTL_TYPE_BOOL ||
             mixer_ctl_get_num_values(handle) != 1)
-            return -EINVAL;
+            return LOG_ERRNO(-EINVAL, "control '%s' is not one switch",
+                             name.c_str());
 
         auto [found, inserted] = controls.emplace(name, Control{handle});
         (void)inserted;
@@ -431,7 +497,8 @@ struct Runtime::Impl {
                 return result(value);
 
             if (value)
-                return -EBUSY;
+                return LOG_ERRNO(-EBUSY, "control '%s' is already on",
+                                 name.c_str());
         }
 
         output = &found->second;
@@ -480,7 +547,7 @@ struct Runtime::Impl {
             auto *control = entry->second;
 
             if (control->users == 1) {
-                int status = result(mixer_ctl_set_value(control->handle, 0, 0));
+                int status = write_control(control->handle, 0);
                 if (status < 0 && !first)
                     first = status;
             }
@@ -505,7 +572,7 @@ struct Runtime::Impl {
 
             int status = control(name, found);
             if (!status && found->users++ == 0) {
-                status = result(mixer_ctl_set_value(found->handle, 0, 1));
+                status = write_control(found->handle, 1);
                 if (status < 0)
                     found->users--;
                 else
@@ -535,7 +602,7 @@ struct Runtime::Impl {
 
         for (auto *control : found->second) {
             if (control->users == 1) {
-                int status = result(mixer_ctl_set_value(control->handle, 0, 0));
+                int status = write_control(control->handle, 0);
                 if (status < 0 && !first)
                     first = status;
             }
@@ -645,7 +712,9 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         }
 
         if (pcms.size() != session.plan.frontends.size())
-            return -EINVAL;
+            return LOG_ERRNO(-EINVAL, "%s has %zu frontends, got %zu "
+                             "configurations", text(requests).c_str(),
+                             session.plan.frontends.size(), pcms.size());
 
         std::set<std::pair<uint32_t, bool>> requested;
         std::vector<const Pcm *> configs;
@@ -664,7 +733,8 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
             const Pcm *config = nullptr;
 
             if (occupied.count(frontend.pcm_id))
-                return -EBUSY;
+                return LOG_ERRNO(-EBUSY, "PCM %u is in use, wanted by %s",
+                                 frontend.pcm_id, text(requests).c_str());
 
             for (const auto &pcm : pcms) {
                 if (pcm.id == frontend.pcm_id &&
@@ -675,7 +745,8 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
             if (!config ||
                 !requested.emplace(config->id, frontend.capture).second ||
                 config->compress.has_value() != session.compress)
-                return -EINVAL;
+                return LOG_ERRNO(-EINVAL, "no configuration for PCM %u",
+                                 frontend.pcm_id);
 
             if (session.compress)
                 session.params = *config->compress;
@@ -686,7 +757,8 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         }
 
         if (impl->exposes_untuned(session.plan, tuned))
-            return -EOPNOTSUPP;
+            return LOG_ERRNO(-EOPNOTSUPP, "%s routes into a graph without "
+                             "calibration", text(requests).c_str());
 
         std::vector<MediaWrite> media;
         status = impl->formats(session, hardware, media);
@@ -726,7 +798,7 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
         id = found.first->first;
 
         for (const auto &write : media) {
-            status = result(mixer_ctl_set_value(write.control, 0, write.item));
+            status = write_control(write.control, write.item);
             if (status < 0)
                 break;
         }
@@ -735,7 +807,7 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
             for (auto *control : active.controls) {
                 active.acquired++;
                 if (control->users++ == 0) {
-                    status = result(mixer_ctl_set_value(control->handle, 0, 1));
+                    status = write_control(control->handle, 1);
                     if (status < 0)
                         break;
                 }
@@ -768,9 +840,17 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
                                           configs[i]->flags, &config);
 
                 if (!stream.handle || !pcm_is_ready(stream.handle)) {
-                    status = -EIO;
+                    status = LOG_ERRNO(-EIO, "PCM %u open at %u Hz, %u "
+                        "channels, %u periods of %u: %s", configs[i]->id,
+                        config.rate, config.channels, config.period_count,
+                        config.period_size, stream.handle ?
+                        pcm_get_error(stream.handle) : "no memory");
                     break;
                 }
+
+                ALOGD("PCM %u open at %u Hz, %u channels, %u periods of %u",
+                      configs[i]->id, config.rate, config.channels,
+                      config.period_count, config.period_size);
             }
         }
 
@@ -791,6 +871,9 @@ int Runtime::acquire_impl(const std::vector<Keys> &requests,
 
         streams = std::move(output);
         impl->follow();
+
+        ALOGD("session %llu: %s:%s", (unsigned long long)id,
+              text(requests).c_str(), summary(active.plan).c_str());
 
         return 0;
     } catch (const std::bad_alloc &) {
@@ -832,7 +915,9 @@ int Runtime::reroute(SessionId id, const std::vector<Keys> &requests,
 
         if (next.plan.frontends.size() != session.plan.frontends.size() ||
             identity(next.plan) != identity(session.plan))
-            return -EXDEV;
+            return LOG_ERRNO(-EXDEV, "session %llu cannot move to %s:%s",
+                             (unsigned long long)id, text(requests).c_str(),
+                             summary(next.plan).c_str());
 
         std::set<uint32_t> tuned;
 
@@ -847,7 +932,8 @@ int Runtime::reroute(SessionId id, const std::vector<Keys> &requests,
         }
 
         if (impl->exposes_untuned(next.plan, tuned, &session))
-            return -EOPNOTSUPP;
+            return LOG_ERRNO(-EOPNOTSUPP, "%s routes into a graph without "
+                             "calibration", text(requests).c_str());
 
         std::set<BackendId> retained;
 
@@ -908,7 +994,7 @@ int Runtime::reroute(SessionId id, const std::vector<Keys> &requests,
             }
 
             if (control->users == 1) {
-                status = result(mixer_ctl_set_value(control->handle, 0, 0));
+                status = write_control(control->handle, 0);
                 if (status < 0 && !first)
                     first = status;
             }
@@ -936,8 +1022,7 @@ int Runtime::reroute(SessionId id, const std::vector<Keys> &requests,
                 session.acquired++;
 
                 if (control->users++ == 0) {
-                    int status = result(mixer_ctl_set_value(control->handle, 0,
-                                                            1));
+                    int status = write_control(control->handle, 1);
                     if (status < 0) {
                         control->users--;
                         session.acquired--;
@@ -954,7 +1039,7 @@ int Runtime::reroute(SessionId id, const std::vector<Keys> &requests,
         status = 0;
 
         for (const auto &write : media) {
-            status = result(mixer_ctl_set_value(write.control, 0, write.item));
+            status = write_control(write.control, write.item);
             if (status < 0)
                 break;
         }
@@ -977,6 +1062,10 @@ int Runtime::reroute(SessionId id, const std::vector<Keys> &requests,
         }
 
         impl->follow();
+
+        ALOGD("session %llu moved to %s:%s, status %d",
+              (unsigned long long)id, text(requests).c_str(),
+              summary(session.plan).c_str(), status ? status : first);
 
         return status ? status : first;
     } catch (const std::bad_alloc &) {
@@ -1027,7 +1116,7 @@ int Runtime::reset()
             if (!value)
                 continue;
 
-            int status = result(mixer_ctl_set_value(handle, 0, 0));
+            int status = write_control(handle, 0);
             if (status < 0)
                 return status;
         }
@@ -1084,7 +1173,8 @@ int Runtime::join(SessionId id, const Keys &selection, bool enable)
         }
 
         if (links.empty())
-            return -ENOENT;
+            return LOG_ERRNO(-ENOENT, "%s links no graph of session %llu",
+                             text(keys).c_str(), (unsigned long long)id);
 
         auto &held = session.joined[keys];
 
@@ -1092,7 +1182,7 @@ int Runtime::join(SessionId id, const Keys &selection, bool enable)
             held.push_back(control);
 
             if (control->users++ == 0) {
-                status = result(mixer_ctl_set_value(control->handle, 0, 1));
+                status = write_control(control->handle, 1);
                 if (status < 0) {
                     impl->leave(session, keys);
 
@@ -1142,7 +1232,8 @@ int Runtime::prepare_impl(SessionId id, Configure configure,
 
         if (value != SNDRV_PCM_STATE_SETUP &&
             value != SNDRV_PCM_STATE_PREPARED)
-            return -EBADFD;
+            return LOG_ERRNO(-EBADFD, "PCM %u cannot prepare in state %d",
+                             stream.id, value);
     }
 
     if (!session.initialized) {
@@ -1162,7 +1253,12 @@ int Runtime::prepare_impl(SessionId id, Configure configure,
         int status = result(::ioctl(session.streams[0].compress,
                                     SNDRV_COMPRESS_SET_PARAMS, &session.params));
         if (status)
-            return status;
+            return LOG_ERRNO(status, "compress device %u parameters for "
+                             "codec %u: %s", session.streams[0].id,
+                             session.params.codec.id, strerror(-status));
+
+        ALOGD("compress device %u has the parameters of codec %u",
+              session.streams[0].id, session.params.codec.id);
 
         session.configured = true;
 
@@ -1179,7 +1275,10 @@ int Runtime::prepare_impl(SessionId id, Configure configure,
 
         int status = ar_topology::prepare(stream.handle, impl->mixer, {});
         if (status)
-            return status;
+            return LOG_ERRNO(status, "PCM %u prepare: %s", stream.id,
+                             strerror(-status));
+
+        ALOGD("PCM %u prepared", stream.id);
     }
 
     return 0;
@@ -1475,7 +1574,8 @@ int Runtime::start(SessionId id)
 
         if (value != SNDRV_PCM_STATE_PREPARED &&
             value != SNDRV_PCM_STATE_RUNNING)
-            return -EBADFD;
+            return LOG_ERRNO(-EBADFD, "PCM %u cannot start in state %d",
+                             stream.id, value);
     }
 
     const auto &session = found->second;
@@ -1498,7 +1598,10 @@ int Runtime::start(SessionId id)
         int status = result(pcm_ioctl(stream.handle, SNDRV_PCM_IOCTL_START,
                                       nullptr));
         if (status)
-            return status;
+            return LOG_ERRNO(status, "PCM %u start: %s", stream.id,
+                             strerror(-status));
+
+        ALOGD("PCM %u started", stream.id);
     }
 
     return 0;
@@ -1518,6 +1621,9 @@ int Runtime::stop(SessionId id)
             result(::ioctl(stream.compress, SNDRV_COMPRESS_STOP));
         if (status == -EPERM && !stream.handle)
             status = 0;
+
+        if (status)
+            ALOGE("stream %u stop: %s", stream.id, strerror(-status));
 
         if (status && !first)
             first = status;
@@ -1548,6 +1654,8 @@ int Runtime::open(const std::vector<Keys> &requests,
 int Runtime::close(SessionId id)
 {
     std::lock_guard<std::mutex> lock(impl->mutex);
+
+    ALOGD("session %llu closes", (unsigned long long)id);
 
     return impl->release(id);
 }

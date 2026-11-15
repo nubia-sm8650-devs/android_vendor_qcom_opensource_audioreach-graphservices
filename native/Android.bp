@@ -42,6 +42,7 @@ cc_library_shared {
     shared_libs: [
         "libjsoncpp",
         "libar-acdb",
+        "liblog",
         "libtinyalsa",
     ],
 }
@@ -62,7 +63,10 @@ cc_test_host {
         "external/tinyalsa/include",
         "bionic/libc/kernel/uapi",
     ],
-    shared_libs: ["libjsoncpp"],
+    shared_libs: [
+        "libjsoncpp",
+        "liblog",
+    ],
     cpp_std: "c++17",
     cppflags: ["-fexceptions"],
     cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],
@@ -86,6 +90,7 @@ cc_test_host {
         "hardware/qcom-caf/sm8650/audio/graphservices/spf/api/ar_utils",
         "bionic/libc/kernel/uapi",
     ],
+    shared_libs: ["liblog"],
     cpp_std: "c++17",
     cppflags: ["-fexceptions"],
     cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],
@@ -144,6 +149,7 @@ cc_test_host {
         "external/tinyalsa/include",
         "bionic/libc/kernel/uapi",
     ],
+    shared_libs: ["liblog"],
     cpp_std: "c++17",
     cppflags: ["-fexceptions"],
     cflags: ["-Wall", "-Wextra", "-Werror", "-UNDEBUG"],

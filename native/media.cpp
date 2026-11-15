@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#define LOG_TAG "ar-topology"
+
 #include "media.h"
+#include "ar_topology_log.h"
 
 #include <cerrno>
 #include <utility>
@@ -38,7 +41,8 @@ int media_writes(struct mixer *mixer, const Backend &backend,
         auto *control = mixer_get_ctl_by_name(mixer,
             backend.controls.at(key).c_str());
         if (!control)
-            return -ENOENT;
+            return LOG_ERRNO(-ENOENT, "control '%s' is missing",
+                             backend.controls.at(key).c_str());
 
         if (mixer_ctl_get_type(control) != MIXER_CTL_TYPE_ENUM ||
             mixer_ctl_get_num_values(control) != 1)
@@ -53,7 +57,8 @@ int media_writes(struct mixer *mixer, const Backend &backend,
         }
 
         if (item == count)
-            return -EINVAL;
+            return LOG_ERRNO(-EINVAL, "control '%s' has no item '%s'",
+                             backend.controls.at(key).c_str(), value.c_str());
 
         int current = mixer_ctl_get_value(control, 0);
         if (current < 0)
@@ -75,7 +80,8 @@ int media_channel_map(struct mixer *mixer, const Backend &backend,
 
     auto *control = mixer_get_ctl_by_name(mixer, found->second.c_str());
     if (!control)
-        return -ENOENT;
+        return LOG_ERRNO(-ENOENT, "control '%s' is missing",
+                         found->second.c_str());
 
     if (mixer_ctl_get_type(control) != MIXER_CTL_TYPE_INT ||
         mixer_ctl_get_num_values(control) < 2)
