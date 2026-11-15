@@ -83,6 +83,7 @@ struct Graph {
     Buffer read;
     Buffer write;
     bool acquired = false;
+    bool started = false;
     bool passive = false;
     ar_topology::SessionId id = 0;
     std::vector<ar_topology::Pcm> configs;
@@ -1272,6 +1273,8 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
         if (!status && graph.compress)
             status = graph.compress->start();
 
+        graph.started = !status;
+
         return status;
     }
     case GSL_CMD_STOP: {
@@ -1281,12 +1284,29 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
         int first = graph.compress ? graph.compress->stop() : 0;
         int status = runtime.stop(graph.id);
 
+        graph.started = false;
+
         return first ? first : status;
     }
     case GSL_CMD_EOS:
         return graph.compress ? graph.compress->eos() : -EOPNOTSUPP;
-    case GSL_CMD_FLUSH:
-        return graph.compress ? graph.compress->flush() : -EOPNOTSUPP;
+    case GSL_CMD_FLUSH: {
+        if (graph.compress)
+            return graph.compress->flush();
+
+        if (!graph.acquired)
+            return graph.passive ? 0 : -EPERM;
+
+        int status = runtime.stop(graph.id);
+
+        if (!status)
+            status = runtime.prepare(graph.id);
+
+        if (!status && graph.started)
+            status = runtime.start(graph.id);
+
+        return status;
+    }
     case GSL_CMD_CLOSE_WITH_PROPS:
         return 0;
     case GSL_CMD_ADD_GRAPH:

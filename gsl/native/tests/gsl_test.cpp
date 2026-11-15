@@ -205,12 +205,30 @@ static void restarts()
     auto playback = open_graph(1);
 
     configure(playback, false);
+    assert(gsl_ioctl(playback, GSL_CMD_FLUSH, nullptr, 0) == AR_ENOTREADY);
     assert(!gsl_ioctl(playback, GSL_CMD_PREPARE, nullptr, 0));
 
     auto *pcm = opened(1);
+    std::vector<uint8_t> data(960);
+    gsl_buff buffer{};
+    uint32_t moved = 0;
+
+    buffer.addr = data.data();
+    buffer.size = data.size();
+
+    assert(!gsl_write(playback, 0, &buffer, &moved) && pcm->filled == 240);
+    assert(!gsl_ioctl(playback, GSL_CMD_FLUSH, nullptr, 0));
+    assert(!pcm->filled && pcm->state == SNDRV_PCM_STATE_PREPARED);
 
     assert(!gsl_ioctl(playback, GSL_CMD_START, nullptr, 0));
     assert(pcm->state == SNDRV_PCM_STATE_RUNNING);
+    assert(!gsl_write(playback, 0, &buffer, &moved) && pcm->filled == 240);
+    assert(!gsl_ioctl(playback, GSL_CMD_FLUSH, nullptr, 0));
+    assert(!pcm->filled && pcm->state == SNDRV_PCM_STATE_RUNNING);
+
+    assert(!gsl_ioctl(playback, GSL_CMD_STOP, nullptr, 0));
+    assert(!gsl_ioctl(playback, GSL_CMD_FLUSH, nullptr, 0));
+    assert(pcm->state == SNDRV_PCM_STATE_PREPARED);
 
     gsl_native::stop();
     assert(open_pcms.empty());
