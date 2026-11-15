@@ -882,6 +882,13 @@ static void compressed()
 
     assert(counts == 10102 && issued(SNDRV_COMPRESS_PARTIAL_DRAIN));
 
+    params.codec.sample_rate = 48000;
+    assert(!gsl_ioctl(handle, GSL_CMD_CONFIGURE_COMPRESS_MEDIA, &params,
+                      sizeof(params)));
+    assert(compress_params.codec.sample_rate == 48000);
+    assert(compress_metadata.key == SNDRV_COMPRESS_ENCODER_PADDING &&
+           !compress_metadata.value[0]);
+
     compress_commands.clear();
     assert(!gsl_ioctl(handle, GSL_CMD_FLUSH, nullptr, 0));
     assert(issued(SNDRV_COMPRESS_STOP));

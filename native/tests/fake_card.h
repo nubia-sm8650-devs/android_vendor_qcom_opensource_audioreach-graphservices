@@ -76,6 +76,9 @@ static int compress_fd = -1;
 static int compress_peer = -1;
 static uint32_t compress_copied;
 static snd_compr_metadata compress_metadata{};
+static bool compress_configured;
+static bool compress_metadata_set;
+static bool compress_next_track;
 static std::string compress_path;
 static int compress_access;
 static snd_compr_params compress_params{};
@@ -107,6 +110,9 @@ extern "C" int __wrap_open(const char *path, int flags, ...)
                            0, ends));
         compress_fd = ends[0];
         compress_peer = ends[1];
+        compress_configured = false;
+        compress_metadata_set = false;
+        compress_next_track = false;
         return compress_fd;
     }
 
@@ -144,6 +150,12 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
         compress_commands.push_back(command);
 
         if (command == SNDRV_COMPRESS_SET_PARAMS) {
+            if (compress_configured && !compress_next_track) {
+                errno = EPERM;
+                return -1;
+            }
+
+            compress_configured = true;
             compress_params = *static_cast<snd_compr_params *>(data);
             tuned_before_params =
                 !compress_mixer->controls.at("set2").bytes.empty();
@@ -158,12 +170,32 @@ extern "C" int __wrap_ioctl(int fd, unsigned long command, ...)
 
         if (command == SNDRV_COMPRESS_SET_METADATA) {
             compress_metadata = *static_cast<snd_compr_metadata *>(data);
+            compress_metadata_set = true;
+            return 0;
+        }
+
+        if (command == SNDRV_COMPRESS_NEXT_TRACK) {
+            if (!compress_metadata_set) {
+                errno = EPERM;
+                return -1;
+            }
+
+            compress_metadata_set = false;
+            compress_next_track = true;
+            return 0;
+        }
+
+        if (command == SNDRV_COMPRESS_PARTIAL_DRAIN) {
+            if (!compress_next_track) {
+                errno = EPERM;
+                return -1;
+            }
+
+            compress_next_track = false;
             return 0;
         }
 
         if (command == SNDRV_COMPRESS_START ||
-            command == SNDRV_COMPRESS_NEXT_TRACK ||
-            command == SNDRV_COMPRESS_PARTIAL_DRAIN ||
             command == SNDRV_COMPRESS_DRAIN)
             return 0;
 

@@ -171,8 +171,21 @@ int CompressStream::configure(const snd_compr_params &value)
     if (!std::memcmp(&value, &params, sizeof(value)))
         return 0;
 
-    if (!started)
+    if (!started || draining)
         return -EBUSY;
+
+    /*
+     * The kernel takes the parameters of the next track only after metadata
+     * and a next track signal. A client sends them once the last track has
+     * drained, so removing no padding stands for the metadata here.
+     */
+    snd_compr_metadata metadata{};
+
+    metadata.key = SNDRV_COMPRESS_ENCODER_PADDING;
+
+    if (::ioctl(fd, SNDRV_COMPRESS_SET_METADATA, &metadata) ||
+        ::ioctl(fd, SNDRV_COMPRESS_NEXT_TRACK))
+        return -errno;
 
     snd_compr_params copy = value;
     if (::ioctl(fd, SNDRV_COMPRESS_SET_PARAMS, &copy))
