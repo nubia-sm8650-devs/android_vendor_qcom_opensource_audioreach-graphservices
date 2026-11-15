@@ -59,6 +59,12 @@ struct Graph {
     std::vector<Keys> calibration;
     std::map<Keys, std::vector<ar_topology::HardwareConfig>> hardware;
     bool managed = false;
+    gsl_handle_t lender = nullptr;
+    Keys lent;
+    Keys lent_calibration;
+    Keys replaced;
+    Keys replaced_calibration;
+    std::vector<ar_topology::HardwareConfig> replaced_hardware;
     std::deque<Operation> pending;
     bool initialized = false;
     gsl_cb_func_ptr callback = nullptr;
@@ -91,6 +97,7 @@ struct Library {
     std::map<gsl_handle_t, std::shared_ptr<Graph>> graphs;
 };
 
+std::mutex command_mutex;
 std::mutex library_mutex;
 std::unique_ptr<Library> library;
 
@@ -245,6 +252,7 @@ int start_on_command(const std::vector<ar_topology::Pcm> &pcms,
 }
 
 int watch(const Use &use, int fd);
+int borrow(const Use &use);
 
 int resolve(const ar_topology::Bindings &bindings,
             const std::vector<Keys> &requests, ar_topology::Plan &plan,
@@ -299,7 +307,11 @@ int acquire(const Use &use, Graph &graph)
     auto &runtime = *use.runtime;
     ar_topology::Plan plan;
 
-    int status = resolve(*use.bindings, graph.requests, plan, graph.passive);
+    int status = borrow(use);
+    if (status)
+        return status;
+
+    status = resolve(*use.bindings, graph.requests, plan, graph.passive);
     if (status || graph.passive)
         return status;
 
@@ -708,6 +720,254 @@ int route(const Use &use, std::vector<Keys> requests,
     return 0;
 }
 
+Graph *lender(const Graph &graph)
+{
+    if (!graph.lender)
+        return nullptr;
+
+    std::lock_guard<std::mutex> lock(library_mutex);
+
+    auto found = library->graphs.find(graph.lender);
+    if (found == library->graphs.end())
+        return nullptr;
+
+    auto &requests = found->second->requests;
+
+    if (std::find(requests.begin(), requests.end(), graph.lent) ==
+        requests.end())
+        return nullptr;
+
+    return found->second.get();
+}
+
+int exchange(ar_topology::Runtime &runtime, Graph &owner, const Keys &from,
+             const Keys &to, const Keys &calibration,
+             std::vector<ar_topology::HardwareConfig> configs)
+{
+    auto requests = owner.requests;
+    auto calibrations = owner.calibration;
+    auto hardware = owner.hardware;
+    size_t index = std::find(requests.begin(), requests.end(), from) -
+                   requests.begin();
+
+    requests[index] = to;
+    calibrations[index] = calibration;
+    hardware.erase(from);
+
+    for (auto &config : configs)
+        config.selection = to;
+
+    if (!configs.empty())
+        hardware[to] = std::move(configs);
+
+    if (owner.acquired) {
+        std::vector<ar_topology::HardwareConfig> list;
+
+        if (owner.managed) {
+            for (const auto &request : requests) {
+                auto found = hardware.find(request);
+
+                if (found != hardware.end())
+                    list.insert(list.end(), found->second.begin(),
+                                found->second.end());
+            }
+        }
+
+        int status = runtime.reroute(owner.id, requests, list, calibrations);
+        if (status)
+            return status;
+    }
+
+    owner.requests = std::move(requests);
+    owner.calibration = std::move(calibrations);
+    owner.hardware = std::move(hardware);
+
+    return 0;
+}
+
+int forward(ar_topology::Runtime &runtime, Graph &graph, Graph &owner)
+{
+    int status = 0;
+
+    if (!owner.initialized)
+        return 0;
+
+    while (!graph.pending.empty()) {
+        auto &operation = graph.pending.front();
+        int written = operation.resolved ?
+            runtime.set_parameters(owner.id, operation.data.data(),
+                                   operation.data.size()) :
+            runtime.set_tagged_parameters(owner.id, graph.lent, operation.tag,
+                                          operation.tkv);
+
+        if (!status)
+            status = written;
+
+        graph.pending.pop_front();
+    }
+
+    return status;
+}
+
+int join(ar_topology::Runtime &runtime, Graph &graph, gsl_handle_t handle,
+         Graph &owner, const Keys &shared)
+{
+    size_t index = std::find(owner.requests.begin(), owner.requests.end(),
+                             shared) - owner.requests.begin();
+    Keys prior = owner.calibration[index];
+    std::vector<ar_topology::HardwareConfig> kept, configs;
+
+    if (owner.hardware.count(shared))
+        kept = owner.hardware.at(shared);
+
+    configs = kept;
+
+    for (const auto &[key, values] : graph.hardware) {
+        (void)key;
+        configs.insert(configs.end(), values.begin(), values.end());
+    }
+
+    int status = exchange(runtime, owner, shared, graph.lent,
+                          graph.lent_calibration, std::move(configs));
+    if (status)
+        return status;
+
+    graph.lender = handle;
+    graph.replaced = shared;
+    graph.replaced_calibration = std::move(prior);
+    graph.replaced_hardware = std::move(kept);
+
+    return forward(runtime, graph, owner);
+}
+
+bool within(const Keys &whole, const Keys &part)
+{
+    return whole != part &&
+        std::includes(whole.begin(), whole.end(), part.begin(), part.end());
+}
+
+int lend(const Use &use, const Keys &added, const Keys &calibration)
+{
+    auto &graph = *use.graph;
+    ar_topology::Plan plan;
+
+    if (use.bindings->select({added}, plan))
+        return -ENOENT;
+
+    graph.lent = added;
+    graph.lent_calibration = calibration;
+
+    Graph *owner = nullptr;
+    gsl_handle_t handle = nullptr;
+    Keys shared;
+
+    {
+        std::lock_guard<std::mutex> lock(library_mutex);
+
+        for (auto &[key, other] : library->graphs) {
+            if (other.get() == &graph)
+                continue;
+
+            for (const auto &request : other->requests) {
+                if (!within(added, request))
+                    continue;
+
+                owner = other.get();
+                handle = key;
+                shared = request;
+            }
+        }
+    }
+
+    if (!owner)
+        return 0;
+
+    int status = join(*use.runtime, graph, handle, *owner, shared);
+    if (status && !graph.lender)
+        graph.lent.clear();
+
+    return status;
+}
+
+int borrow(const Use &use)
+{
+    auto &graph = *use.graph;
+    std::vector<Graph *> waiting;
+
+    {
+        std::lock_guard<std::mutex> lock(library_mutex);
+
+        for (auto &[key, other] : library->graphs) {
+            (void)key;
+
+            if (other.get() != &graph && !other->lent.empty() &&
+                !other->lender)
+                waiting.push_back(other.get());
+        }
+    }
+
+    for (auto *other : waiting) {
+        for (const auto &request : graph.requests) {
+            if (!within(other->lent, request))
+                continue;
+
+            int status = join(*use.runtime, *other, use.graph.get(), graph,
+                              Keys(request));
+            if (status)
+                return status;
+
+            break;
+        }
+    }
+
+    return 0;
+}
+
+int settle(const Use &use)
+{
+    std::vector<Graph *> borrowers;
+    int status = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(library_mutex);
+
+        for (auto &[key, other] : library->graphs) {
+            (void)key;
+
+            if (other->lender == use.graph.get())
+                borrowers.push_back(other.get());
+        }
+    }
+
+    for (auto *other : borrowers) {
+        int written = forward(*use.runtime, *other, *use.graph);
+
+        if (!status)
+            status = written;
+    }
+
+    return status;
+}
+
+int reclaim(ar_topology::Runtime &runtime, Graph &graph)
+{
+    Graph *owner = lender(graph);
+    int status = 0;
+
+    if (owner)
+        status = exchange(runtime, *owner, graph.lent, graph.replaced,
+                          graph.replaced_calibration, graph.replaced_hardware);
+
+    graph.lender = nullptr;
+    graph.lent.clear();
+    graph.lent_calibration.clear();
+    graph.replaced.clear();
+    graph.replaced_calibration.clear();
+    graph.replaced_hardware.clear();
+
+    return status;
+}
+
 int backend(const Use &use, const void *payload, size_t size)
 {
     if (!payload || size != sizeof(gsl_cmd_configure_backend_media))
@@ -768,6 +1028,10 @@ int select(const Use &use, gsl_cmd_id id, const void *payload, size_t size)
 
         Keys removed = keys(
             &static_cast<const gsl_cmd_remove_graph *>(payload)->graph_key_vector);
+
+        if (!graph.lent.empty() && removed == graph.lent)
+            return reclaim(*use.runtime, graph);
+
         auto found = std::find(requests.begin(), requests.end(), removed);
 
         if (found == requests.end())
@@ -787,6 +1051,12 @@ int select(const Use &use, gsl_cmd_id id, const void *payload, size_t size)
 
     if (added.empty())
         return -EINVAL;
+
+    if (id == GSL_CMD_ADD_GRAPH && graph.passive && graph.lent.empty()) {
+        int status = lend(use, added, keys(&selection.cal_key_vect));
+        if (status != -ENOENT)
+            return status;
+    }
 
     if (id == GSL_CMD_CHANGE_GRAPH) {
         requests.clear();
@@ -933,7 +1203,7 @@ int command(const Use &use, Graph &graph, gsl_cmd_id id, void *payload,
             graph.registrations.erase(graph.registrations.begin());
         }
 
-        return status;
+        return status ? status : settle(use);
     }
     case GSL_CMD_REGISTER_CUSTOM_EVENT:
         return registration(use, payload, size);
@@ -1200,6 +1470,7 @@ extern "C" int32_t gsl_open(const struct gsl_key_vector *graph_key_vect,
 
 extern "C" int32_t gsl_close(gsl_handle_t graph_handle)
 {
+    std::lock_guard<std::mutex> commands(command_mutex);
     std::shared_ptr<Graph> graph;
     ar_topology::Runtime *runtime;
 
@@ -1216,6 +1487,13 @@ extern "C" int32_t gsl_close(gsl_handle_t graph_handle)
         graph = std::move(found->second);
         library->graphs.erase(found);
         runtime = library->runtime.get();
+
+        for (auto &[key, other] : library->graphs) {
+            (void)key;
+
+            if (other->lender == graph_handle)
+                other->lender = nullptr;
+        }
     }
 
     silence(*graph);
@@ -1223,6 +1501,9 @@ extern "C" int32_t gsl_close(gsl_handle_t graph_handle)
     std::lock_guard<std::mutex> lock(graph->mutex);
 
     graph->compress.reset();
+
+    if (!graph->lent.empty())
+        return code(reclaim(*runtime, *graph));
 
     return graph->acquired ? code(runtime->close(graph->id)) : AR_EOK;
 }
@@ -1283,6 +1564,7 @@ extern "C" int32_t gsl_register_event_cb(gsl_handle_t graph_handle,
 extern "C" int32_t gsl_ioctl(gsl_handle_t graph_handle, enum gsl_cmd_id cmd_id,
                              void *cmd_payload, size_t cmd_payload_sz)
 {
+    std::lock_guard<std::mutex> commands(command_mutex);
     auto use = find(graph_handle);
 
     if (!use.graph)
@@ -1308,6 +1590,7 @@ extern "C" int32_t gsl_set_custom_config(gsl_handle_t graph_handle,
     if (payload_size > uint32_t(std::numeric_limits<int32_t>::max()) - 8)
         return AR_EBADPARAM;
 
+    std::lock_guard<std::mutex> commands(command_mutex);
     auto use = find(graph_handle);
 
     if (!use.graph)
@@ -1315,6 +1598,12 @@ extern "C" int32_t gsl_set_custom_config(gsl_handle_t graph_handle,
 
     auto &graph = *use.graph;
     std::lock_guard<std::mutex> lock(graph.mutex);
+
+    Graph *owner = lender(graph);
+
+    if (owner && owner->initialized)
+        return code(use.runtime->set_parameters(owner->id, payload,
+                                                payload_size));
 
     if (graph.initialized)
         return code(use.runtime->set_parameters(graph.id, payload,
@@ -1339,6 +1628,7 @@ extern "C" int32_t gsl_get_custom_config(gsl_handle_t graph_handle,
     if (!payload || !size)
         return AR_EBADPARAM;
 
+    std::lock_guard<std::mutex> commands(command_mutex);
     auto use = find(graph_handle);
 
     if (!use.graph)
@@ -1346,6 +1636,11 @@ extern "C" int32_t gsl_get_custom_config(gsl_handle_t graph_handle,
 
     auto &graph = *use.graph;
     std::lock_guard<std::mutex> lock(graph.mutex);
+
+    Graph *owner = lender(graph);
+
+    if (owner && owner->initialized)
+        return code(use.runtime->get_parameters(owner->id, payload, size));
 
     if (!graph.initialized)
         return AR_ENOTREADY;
@@ -1358,6 +1653,7 @@ extern "C" int32_t gsl_set_config(gsl_handle_t graph_handle,
                                   uint32_t tag,
                                   const struct gsl_key_vector *tag_key_vect)
 {
+    std::lock_guard<std::mutex> commands(command_mutex);
     auto use = find(graph_handle);
 
     if (!use.graph)
@@ -1372,6 +1668,12 @@ extern "C" int32_t gsl_set_config(gsl_handle_t graph_handle,
         operation.gkv = keys(graph_key_vect);
         operation.tkv = keys(tag_key_vect);
         operation.tag = tag;
+
+        Graph *owner = lender(graph);
+
+        if (owner && owner->initialized)
+            return code(use.runtime->set_tagged_parameters(owner->id,
+                graph.lent, operation.tag, operation.tkv));
 
         if (graph.initialized)
             return code(use.runtime->set_tagged_parameters(graph.id,
@@ -1389,6 +1691,7 @@ extern "C" int32_t gsl_set_cal(gsl_handle_t graph_handle,
                                const struct gsl_key_vector *graph_key_vect,
                                const struct gsl_key_vector *cal_key_vect)
 {
+    std::lock_guard<std::mutex> commands(command_mutex);
     auto use = find(graph_handle);
 
     if (!use.graph)
@@ -1400,6 +1703,18 @@ extern "C" int32_t gsl_set_cal(gsl_handle_t graph_handle,
     try {
         Keys selection = keys(graph_key_vect);
         Keys calibration = keys(cal_key_vect);
+
+        Graph *owner = lender(graph);
+
+        if (owner && owner->acquired)
+            return code(use.runtime->set_calibration(owner->id, graph.lent,
+                                                     calibration));
+
+        if (!graph.lent.empty()) {
+            graph.lent_calibration = std::move(calibration);
+
+            return AR_EOK;
+        }
 
         if (graph.acquired)
             return code(use.runtime->set_calibration(graph.id, selection,

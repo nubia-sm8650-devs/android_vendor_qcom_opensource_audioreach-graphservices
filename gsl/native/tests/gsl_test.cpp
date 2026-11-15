@@ -466,10 +466,20 @@ static Json::Value loopback_input()
     device["references"] = Json::Value(Json::arrayValue);
     input["selections"].append(device);
 
+    Json::Value reference;
+
+    reference["name"] = "link5";
+    reference["control"] = false;
+    reference["source_graph"] = 3;
+    reference["destination_graph"] = 5;
+    reference["path_control"] = "path5";
+    input["references"].append(reference);
+
     merged = input["selections"][0];
     merged["graph_keys"].append(pair);
     merged["graphs"].append(5);
     merged["tuning"].append(tuning);
+    merged["references"].append("link5");
     input["selections"].append(merged);
 
     return input;
@@ -494,6 +504,97 @@ static void passive()
     assert(!gsl_close(handle));
 
     gsl_native::stop();
+}
+
+static void loopback()
+{
+    auto controls = make_mixer();
+
+    assert(!gsl_native::start(0, &controls,
+        std::make_unique<ar_topology::Bindings>(loopback_input())));
+
+    auto playback = open_graph(1);
+
+    configure(playback, false);
+    assert(!gsl_ioctl(playback, GSL_CMD_PREPARE, nullptr, 0));
+
+    gsl_key_value_pair device{0xb, 1}, both[] = {{0xa, 1}, {0xb, 1}};
+    gsl_key_vector keys{1, &device};
+    gsl_cmd_graph_select selection{{2, both}, {0, nullptr}};
+    gsl_cmd_remove_graph removal{{2, both}};
+    gsl_handle_t capture = nullptr;
+    auto &gate = controls.controls.at("hardware5");
+    auto &set = controls.controls.at("set5");
+
+    assert(!gsl_open(&keys, nullptr, &capture));
+    assert(!gsl_ioctl(capture, GSL_CMD_PREPARE, nullptr, 0));
+
+    uint32_t record[] = {0x4005, 0x08001234, 4, 0, 77, 0};
+    auto *bytes = reinterpret_cast<uint8_t *>(record);
+
+    assert(!gsl_set_custom_config(capture, bytes, sizeof(record)));
+    assert(!gate.enabled);
+    set.bytes.clear();
+
+    assert(!gsl_ioctl(capture, GSL_CMD_ADD_GRAPH, &selection,
+                      sizeof(selection)));
+    assert(gate.enabled && controls.controls.at("hardware3").enabled);
+    assert(open_pcms.size() == 1 && opened(1));
+    assert(set.bytes.size() == 8 + sizeof(record) &&
+           !std::memcmp(set.bytes.data() + 8, record, sizeof(record)));
+
+    record[4] = 78;
+    assert(!gsl_set_custom_config(capture, bytes, sizeof(record)));
+    assert(!std::memcmp(set.bytes.data() + 8, record, sizeof(record)));
+
+    assert(!gsl_ioctl(capture, GSL_CMD_REMOVE_GRAPH, &removal,
+                      sizeof(removal)));
+    assert(!gate.enabled && controls.controls.at("hardware3").enabled);
+    assert(gsl_ioctl(capture, GSL_CMD_REMOVE_GRAPH, &removal,
+                     sizeof(removal)) == AR_ENOTEXIST);
+
+    assert(!gsl_ioctl(capture, GSL_CMD_ADD_GRAPH, &selection,
+                      sizeof(selection)));
+    assert(gate.enabled);
+    assert(!gsl_close(capture));
+    assert(!gate.enabled && opened(1));
+
+    assert(!gsl_open(&keys, nullptr, &capture));
+    assert(!gsl_ioctl(capture, GSL_CMD_ADD_GRAPH, &selection,
+                      sizeof(selection)));
+    assert(gate.enabled);
+    assert(!gsl_close(playback));
+    assert(!gate.enabled && open_pcms.empty());
+
+    record[4] = 79;
+    set.bytes.clear();
+    assert(!gsl_set_custom_config(capture, bytes, sizeof(record)));
+    assert(set.bytes.empty());
+
+    playback = open_graph(1);
+    configure(playback, false);
+    assert(!gsl_ioctl(playback, GSL_CMD_PREPARE, nullptr, 0));
+    assert(gate.enabled && opened(1));
+    assert(set.bytes.size() == 8 + sizeof(record) &&
+           !std::memcmp(set.bytes.data() + 8, record, sizeof(record)));
+    assert(!gsl_close(capture));
+    assert(!gate.enabled && opened(1));
+
+    assert(!gsl_close(playback));
+    playback = open_graph(1);
+    assert(!gsl_open(&keys, nullptr, &capture));
+    assert(!gsl_ioctl(capture, GSL_CMD_ADD_GRAPH, &selection,
+                      sizeof(selection)));
+    assert(open_pcms.empty() && !gate.enabled);
+    configure(playback, false);
+    assert(!gsl_ioctl(playback, GSL_CMD_PREPARE, nullptr, 0));
+    assert(gate.enabled);
+    assert(!gsl_ioctl(capture, GSL_CMD_REMOVE_GRAPH, &removal,
+                      sizeof(removal)));
+    assert(!gate.enabled && opened(1));
+
+    gsl_native::stop();
+    assert(open_pcms.empty());
 }
 
 static void routes()
@@ -896,6 +997,7 @@ int main()
     mapped();
     backend_media();
     passive();
+    loopback();
     routes();
     events();
     compressed();
