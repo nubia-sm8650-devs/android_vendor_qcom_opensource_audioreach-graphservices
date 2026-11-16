@@ -28,8 +28,10 @@ cc_library_shared {
         "src/linux/ar_osal_thread.c",
         "src/linux/ar_osal_timer.c",
         "src/linux/qcom/ar_osal_servreg.c",
-        "src/linux/qcom/ar_osal_shmem_db.c",
-    ],
+    ] + select(soong_config_variable("qtiaudio", "feature_native_topology"), {
+        "true": ["src/linux/ar_osal_shmem.c"],
+        default: ["src/linux/qcom/ar_osal_shmem_db.c"],
+    }),
 
     include_dirs: [
         "system/memory/libion/include",
