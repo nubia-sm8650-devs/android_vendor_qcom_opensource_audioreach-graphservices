@@ -16,7 +16,10 @@ cc_binary_host {
         "routing.cpp",
         "frontends.cpp",
     ],
-    include_dirs: ["bionic/libc/kernel/uapi"],
+    include_dirs: [
+        "hardware/qcom-caf/sm8650/audio/graphservices/uapi",
+        "bionic/libc/kernel/uapi",
+    ],
     cpp_std: "c++17",
     cppflags: ["-fexceptions"],
     cflags: [
