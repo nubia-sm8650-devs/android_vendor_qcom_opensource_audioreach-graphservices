@@ -38,6 +38,7 @@ cc_library_shared {
     cpp_std: "c++17",
     cppflags: ["-fexceptions"],
     cflags: ["-Wall", "-Wextra", "-Werror"],
+    include_dirs: ["hardware/qcom-caf/sm8650/audio/graphservices/uapi"],
     header_libs: ["libarosal_headers", "libspf-headers"],
     shared_libs: [
         "libjsoncpp",
@@ -60,6 +61,7 @@ cc_test_host {
         "hardware/qcom-caf/sm8650/audio/graphservices/spf/api",
         "hardware/qcom-caf/sm8650/audio/graphservices/spf/api/apm",
         "hardware/qcom-caf/sm8650/audio/graphservices/spf/api/ar_utils",
+        "hardware/qcom-caf/sm8650/audio/graphservices/uapi",
         "external/tinyalsa/include",
         "bionic/libc/kernel/uapi",
     ],
@@ -146,6 +148,7 @@ cc_test_host {
     include_dirs: [
         "hardware/qcom-caf/sm8650/audio/graphservices/acdb/api",
         "hardware/qcom-caf/sm8650/audio/graphservices/ar_osal/api",
+        "hardware/qcom-caf/sm8650/audio/graphservices/uapi",
         "external/tinyalsa/include",
         "bionic/libc/kernel/uapi",
     ],
